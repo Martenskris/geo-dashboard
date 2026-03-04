@@ -10,59 +10,35 @@ import pyarrow.parquet as pq
 FILE = "TotaleTimetable_date.parquet"
 
 import os
-import requests
 import streamlit as st
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import gdown
 
 FILE = "TotaleTimetable_date.parquet"
 
-DATA_URL = st.secrets.get("DATA_URL", "").strip()
+# In Streamlit Cloud staat dit in Secrets
+GDRIVE_FILE_ID = st.secrets.get("GDRIVE_FILE_ID", "").strip()
 
-def download_file(url: str, dest: str):
-    sess = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "HEAD"],
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    sess.mount("https://", adapter)
-    sess.mount("http://", adapter)
+def ensure_dataset():
+    if os.path.exists(FILE):
+        return
 
-    headers = {"User-Agent": "Mozilla/5.0"}
+    if not GDRIVE_FILE_ID:
+        st.error("Secret GDRIVE_FILE_ID ontbreekt in Streamlit Cloud → App settings → Secrets.")
+        st.stop()
 
-    try:
-        r = sess.get(url, stream=True, timeout=(10, 120), allow_redirects=True, headers=headers)
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(
-            f"Kan DATA_URL niet bereiken vanaf Streamlit Cloud.\n"
-            f"URL: {url!r}\n"
-            f"Fout: {type(e).__name__}: {e}\n\n"
-            f"Dit gebeurt meestal als de link niet publiek is (login/intranet) of geblokkeerd."
-        ) from e
+    url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}&export=download"
 
-    if r.status_code != 200:
-        snippet = (r.text[:300] if hasattr(r, "text") else "")
-        raise RuntimeError(
-            f"Download faalt met HTTP {r.status_code}\n"
-            f"Final URL: {r.url}\n"
-            f"Response snippet: {snippet}"
-        )
+    with st.status("Dataset downloaden van Google Drive…", expanded=True) as s:
+        st.write("Drive file id:", GDRIVE_FILE_ID)
+        try:
+            # fuzzy=True laat gdown ook share-links/id's slim interpreteren
+            gdown.download(url, FILE, quiet=False, fuzzy=True)
+        except Exception as e:
+            st.error(f"Download faalde: {type(e).__name__}: {e}")
+            st.stop()
+        s.update(label="Dataset gedownload", state="complete")
 
-    ctype = (r.headers.get("content-type") or "").lower()
-    if "text/html" in ctype:
-        raise RuntimeError(
-            f"DATA_URL geeft HTML terug i.p.v. het parquet-bestand.\n"
-            f"Final URL: {r.url}\n"
-            f"Gebruik een DIRECT DOWNLOAD link (zie voorbeelden hieronder)."
-        )
-
-    with open(dest, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
+ensure_dataset()
 
 # Download 1x indien nodig
 if not os.path.exists(FILE):
@@ -271,4 +247,5 @@ st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_conta
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
 
