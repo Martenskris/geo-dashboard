@@ -245,7 +245,7 @@ else:
 
     # key mee laten veranderen met slider => Streamlit forceert her-render van de kaart
     map_key = f"map-{start_dt.isoformat()}-{end_dt.isoformat()}"
-    st.plotly_chart(fig_map, use_container_width=True, key=map_key)
+  st.plotly_chart(fig_map, use_container_width=True)
 
 # =======================
 # 3 grafieken
@@ -254,5 +254,6 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
 
 
