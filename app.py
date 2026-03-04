@@ -221,7 +221,7 @@ subp = downsample_ordered(sub, MAX_POINTS)
 # =======================
 st.subheader("GPS track (geselecteerd tijdvenster)")
 
-# Forceer GPS naar numeriek (dit is vaak de echte oorzaak dat er niets verschijnt)
+# Forceer GPS naar numeriek
 subp[LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
 subp[LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
 
@@ -231,21 +231,8 @@ sub_ok = sub_ok[np.isfinite(sub_ok[LON_COL]) & np.isfinite(sub_ok[LAT_COL])]
 if len(sub_ok) < 2:
     st.info("Geen (voldoende) geldige GPS punten in deze selectie.")
 else:
-    # sanity check: lon/lat moeten in graden liggen
-    lon_ok = sub_ok[LON_COL].between(-180, 180).all()
-    lat_ok = sub_ok[LAT_COL].between(-90, 90).all()
-    if not (lon_ok and lat_ok):
-        st.warning(
-            "GPS_x/GPS_y lijken geen lon/lat in graden te zijn (waarden buiten [-180,180]/[-90,90]). "
-            "Dan werkt Scattermapbox niet. Check of GPS_x/GPS_y misschien UTM/meters zijn, of omgewisseld."
-        )
-
     fig_map = make_map_figure(sub_ok, start_dt, end_dt)
-    st.plotly_chart(fig_map, use_container_width=True, key=f"map-{start_dt.isoformat()}-{end_dt.isoformat()}")
-
-    # key mee laten veranderen met slider => Streamlit forceert her-render van de kaart
-    map_key = f"map-{start_dt.isoformat()}-{end_dt.isoformat()}"
-  st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, use_container_width=True)
 
 # =======================
 # 3 grafieken
@@ -254,6 +241,7 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
 
 
 
