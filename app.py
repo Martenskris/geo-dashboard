@@ -130,13 +130,15 @@ def make_map_figure(sub_ok, start_dt, end_dt):
 
 
 def make_line_figure(x, y, title):
-    # markers quasi onzichtbaar maar wél klikbaar
+    """
+    Lijnplot + onzichtbare markers zodat select-events altijd klikbare punten hebben.
+    """
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=x,
         y=y,
         mode="lines+markers",
-        marker={"size": 6, "opacity": 0.01},
+        marker={"size": 8, "opacity": 0.01},  # quasi onzichtbaar maar klikbaar
         line={"width": 2},
         name=title
     ))
@@ -146,6 +148,7 @@ def make_line_figure(x, y, title):
         height=250,
         hovermode="x",
         showlegend=False,
+        clickmode="event+select",
     )
     return fig
 
@@ -166,12 +169,15 @@ def add_vline(fig, x):
 
 
 def nearest_values_at(df_full, ts, sig1, sig2, sig3):
+    """
+    Dichtstbijzijnde timestamp (geen interpolatie).
+    """
     if ts is None or df_full.empty:
         return None
 
     d = df_full[["Timestamp", sig1, sig2, sig3]].dropna(subset=["Timestamp"]).sort_values("Timestamp")
-
     t = pd.Timestamp(ts)
+
     idx = d["Timestamp"].searchsorted(t)
 
     if idx <= 0:
@@ -191,13 +197,12 @@ def nearest_values_at(df_full, ts, sig1, sig2, sig3):
     }
 
 
-def plot_with_click(fig, key):
+def plot_and_capture_click(fig, key):
     """
-    Klik op een punt in de grafiek -> krijgt x (Timestamp) terug.
-    Werkt met Streamlit plotly select events.
+    Laat je "eender waar" klikken:
+    - We lezen de clickData uit plotly via select-event.
+    - Door onzichtbare markers is een klik op de lijn (bijna altijd) een punt-selectie.
     """
-    fig.update_layout(clickmode="event+select")
-
     ev = st.plotly_chart(
         fig,
         use_container_width=True,
@@ -253,9 +258,12 @@ if not sig_candidates:
     st.error("Geen numerieke/logische signalen gevonden in de Parquet.")
     st.stop()
 
-sig1_default = choose_default(sig_candidates, ["GPS_speed", "TCO1_VehicleSpeed", "EEC1_Speed"])
-sig2_default = choose_default(sig_candidates, ["GPS_course", "EEC2_AccPed1Position", "ET1_CoolantTemperature"])
-sig3_default = choose_default(sig_candidates, ["GPS_z", "AAI_Temperature1", "AMB_AirTemperature"])
+# -----------------------
+# Nieuwe gewenste defaults
+# -----------------------
+sig1_default = choose_default(sig_candidates, ["GPS_speed"])
+sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
+sig3_default = choose_default(sig_candidates, ["EEC1_Speed"])
 
 # Keuze onthouden tussen reruns
 if "sig1" not in st.session_state:
@@ -302,8 +310,8 @@ tmax = tmax_ts.to_pydatetime()
 
 # Fijnere slider stap
 total_seconds = max(1, int((tmax - tmin).total_seconds()))
-step_seconds = max(1, total_seconds // 10000)  # ~10.000 stapjes
-step_seconds = min(step_seconds, 60)           # nooit grover dan 60s
+step_seconds = max(1, total_seconds // 20000)  # nog fijner (~20.000 stapjes)
+step_seconds = min(step_seconds, 10)           # nooit grover dan 10s
 step = timedelta(seconds=step_seconds)
 
 start_dt, end_dt = st.slider(
@@ -349,20 +357,20 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 if "clicked_ts" not in st.session_state:
     st.session_state["clicked_ts"] = None
 
-# figuren (met klikbare markers)
+# figuren
 fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1)
 fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2)
 fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3)
 
-# meetlijn in alle grafieken
+# meetlijn op huidige clicked_ts
 fig1 = add_vline(fig1, st.session_state["clicked_ts"])
 fig2 = add_vline(fig2, st.session_state["clicked_ts"])
 fig3 = add_vline(fig3, st.session_state["clicked_ts"])
 
-# klik op eender welke grafiek -> update clicked_ts
-clicked1 = plot_with_click(fig1, key="plot_sig1")
-clicked2 = plot_with_click(fig2, key="plot_sig2")
-clicked3 = plot_with_click(fig3, key="plot_sig3")
+# Klik op eender welke grafiek
+clicked1 = plot_and_capture_click(fig1, key="plot_sig1")
+clicked2 = plot_and_capture_click(fig2, key="plot_sig2")
+clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
 
 new_click = clicked1 or clicked2 or clicked3
 if new_click is not None:
@@ -374,8 +382,8 @@ vals = nearest_values_at(df, st.session_state["clicked_ts"], sig1, sig2, sig3)
 with st.container(border=True):
     st.markdown("### Meetpunt (klik in een grafiek)")
     if vals is None:
-        st.write("Klik op een punt in een grafiek om de waarden op dat tijdstip te zien.")
-        st.caption("Tip: klik ergens op de lijn; door de onzichtbare markers zijn punten selecteerbaar.")
+        st.write("Klik ergens op de lijn in een grafiek om het tijdstip te selecteren.")
+        st.caption("Door onzichtbare markers is een klik op de lijn selecteerbaar.")
     else:
         st.write(f"**Timestamp:** {vals['Timestamp']}")
         cc1, cc2, cc3 = st.columns(3)
