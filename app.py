@@ -1,4 +1,6 @@
 import os
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -138,6 +140,72 @@ def make_line_figure(x, y, title):
     return fig
 
 
+def safe_index(options, value, fallback):
+    if value in options:
+        return options.index(value)
+    if fallback in options:
+        return options.index(fallback)
+    return 0
+
+
+def add_vline(fig, x):
+    if x is None:
+        return fig
+    fig.add_vline(x=x, line_width=2)
+    return fig
+
+
+def nearest_values_at(df_full, ts, sig1, sig2, sig3):
+    if ts is None or df_full.empty:
+        return None
+
+    d = df_full[["Timestamp", sig1, sig2, sig3]].dropna(subset=["Timestamp"]).sort_values("Timestamp")
+
+    t = pd.Timestamp(ts)
+    idx = d["Timestamp"].searchsorted(t)
+
+    if idx <= 0:
+        row = d.iloc[0]
+    elif idx >= len(d):
+        row = d.iloc[-1]
+    else:
+        before = d.iloc[idx - 1]
+        after = d.iloc[idx]
+        row = before if (t - before["Timestamp"]) <= (after["Timestamp"] - t) else after
+
+    return {
+        "Timestamp": row["Timestamp"].to_pydatetime(),
+        sig1: float(row[sig1]) if pd.notna(row[sig1]) else np.nan,
+        sig2: float(row[sig2]) if pd.notna(row[sig2]) else np.nan,
+        sig3: float(row[sig3]) if pd.notna(row[sig3]) else np.nan,
+    }
+
+
+def plot_with_click(fig, key):
+    """
+    Toon Plotly figuur en lees klik/selectie terug.
+    Werkt met Streamlit's plotly selectie-event (nieuwere Streamlit versies).
+    """
+    fig.update_layout(clickmode="event+select")
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=key,
+        on_select="rerun",
+        selection_mode=["points"],
+    )
+
+    clicked_x = None
+    try:
+        sel = event.get("selection", None) if isinstance(event, dict) else None
+        if sel and "points" in sel and len(sel["points"]) > 0:
+            clicked_x = sel["points"][0].get("x", None)
+    except Exception:
+        clicked_x = None
+
+    return clicked_x
+
+
 # =======================
 # UI
 # =======================
@@ -170,7 +238,7 @@ sig1_default = choose_default(sig_candidates, ["GPS_speed", "TCO1_VehicleSpeed",
 sig2_default = choose_default(sig_candidates, ["GPS_course", "EEC2_AccPed1Position", "ET1_CoolantTemperature"])
 sig3_default = choose_default(sig_candidates, ["GPS_z", "AAI_Temperature1", "AMB_AirTemperature"])
 
-# ---- NIEUW: defaults éénmalig in session_state zetten zodat keuze blijft staan ----
+# keuze onthouden
 if "sig1" not in st.session_state:
     st.session_state["sig1"] = sig1_default
 if "sig2" not in st.session_state:
@@ -178,21 +246,13 @@ if "sig2" not in st.session_state:
 if "sig3" not in st.session_state:
     st.session_state["sig3"] = sig3_default
 
-def safe_index(options, value, fallback):
-    """Zorg dat we altijd een geldige index hebben, ook als kolommen veranderen."""
-    if value in options:
-        return options.index(value)
-    if fallback in options:
-        return options.index(fallback)
-    return 0
-
 c1, c2, c3 = st.columns(3)
 with c1:
     sig1 = st.selectbox(
         "Signaal 1 (typ om te zoeken)",
         sig_candidates,
         index=safe_index(sig_candidates, st.session_state["sig1"], sig1_default),
-        key="sig1",  # <-- bewaart keuze automatisch in session_state
+        key="sig1",
     )
 with c2:
     sig2 = st.selectbox(
@@ -209,6 +269,7 @@ with c3:
         key="sig3",
     )
 
+# data laden
 df = load_columns(["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3])
 
 if len(df) < 2:
@@ -221,11 +282,18 @@ tmax_ts = df["Timestamp"].iloc[-1]
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
 
+# fijnere slider stap
+total_seconds = max(1, int((tmax - tmin).total_seconds()))
+step_seconds = max(1, total_seconds // 10000)  # ~10.000 stapjes
+step_seconds = min(step_seconds, 60)           # nooit grover dan 60s
+step = timedelta(seconds=step_seconds)
+
 start_dt, end_dt = st.slider(
     "Tijdvenster (start/einde)",
     min_value=tmin,
     max_value=tmax,
     value=(tmin, tmax),
+    step=step,
 )
 
 start = pd.Timestamp(start_dt)
@@ -256,9 +324,45 @@ else:
     st.plotly_chart(fig_map, use_container_width=True)
 
 # =======================
-# 3 grafieken
+# 3 grafieken + meetlijn + waarden
 # =======================
 st.subheader("Signalen (geselecteerd tijdvenster)")
-st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
-st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
-st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
+if "clicked_ts" not in st.session_state:
+    st.session_state["clicked_ts"] = None
+
+# figuren
+fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1)
+fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2)
+fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3)
+
+# meetlijn in alle grafieken
+fig1 = add_vline(fig1, st.session_state["clicked_ts"])
+fig2 = add_vline(fig2, st.session_state["clicked_ts"])
+fig3 = add_vline(fig3, st.session_state["clicked_ts"])
+
+# klikken op eender welke grafiek
+clicked1 = plot_with_click(fig1, key="plot_sig1")
+clicked2 = plot_with_click(fig2, key="plot_sig2")
+clicked3 = plot_with_click(fig3, key="plot_sig3")
+
+new_click = clicked1 or clicked2 or clicked3
+if new_click is not None:
+    st.session_state["clicked_ts"] = new_click
+
+# waardenkader (decimale cijfers)
+vals = nearest_values_at(df, st.session_state["clicked_ts"], sig1, sig2, sig3)
+
+with st.container(border=True):
+    st.markdown("### Meetpunt (klik in een grafiek)")
+    if vals is None:
+        st.write("Klik in een grafiek om de waarden op dat tijdstip te zien.")
+    else:
+        st.write(f"**Timestamp:** {vals['Timestamp']}")
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            st.metric(sig1, f"{vals[sig1]:.6f}")
+        with cc2:
+            st.metric(sig2, f"{vals[sig2]:.6f}")
+        with cc3:
+            st.metric(sig3, f"{vals[sig3]:.6f}")
