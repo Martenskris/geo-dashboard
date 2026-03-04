@@ -11,8 +11,8 @@ import gdown
 # =======================
 FILE = "TotaleTimetable_date.parquet"
 
-LON_COL = "GPS_x"   # longitude (graden)
-LAT_COL = "GPS_y"   # latitude  (graden)
+LAT_COL = "GPS_x"   # longitude (graden)
+LON_COL = "GPS_y"   # latitude  (graden)
 
 EXCLUDE = {"Time", "Seconds", "Minutes", "Hours", "Year", "Month", "Day"}
 MAX_POINTS = 8000
@@ -254,4 +254,5 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
 
