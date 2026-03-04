@@ -10,21 +10,71 @@ import pyarrow.parquet as pq
 FILE = "TotaleTimetable_date.parquet"
 
 import os
-import streamlit as st
-
-DATA_URL = st.secrets.get("DATA_URL", os.getenv("DATA_URL", "")).strip()
-
 import requests
-import os
+import streamlit as st
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 FILE = "TotaleTimetable_date.parquet"
 
-if (not os.path.exists(FILE)) and DATA_URL:
-    r = requests.get(DATA_URL, timeout=120)
-    r.raise_for_status()
-    with open(FILE, "wb") as f:
-        f.write(r.content)
-        
+DATA_URL = st.secrets.get("DATA_URL", "").strip()
+
+def download_file(url: str, dest: str):
+    sess = requests.Session()
+    retry = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        r = sess.get(url, stream=True, timeout=(10, 120), allow_redirects=True, headers=headers)
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(
+            f"Kan DATA_URL niet bereiken vanaf Streamlit Cloud.\n"
+            f"URL: {url!r}\n"
+            f"Fout: {type(e).__name__}: {e}\n\n"
+            f"Dit gebeurt meestal als de link niet publiek is (login/intranet) of geblokkeerd."
+        ) from e
+
+    if r.status_code != 200:
+        snippet = (r.text[:300] if hasattr(r, "text") else "")
+        raise RuntimeError(
+            f"Download faalt met HTTP {r.status_code}\n"
+            f"Final URL: {r.url}\n"
+            f"Response snippet: {snippet}"
+        )
+
+    ctype = (r.headers.get("content-type") or "").lower()
+    if "text/html" in ctype:
+        raise RuntimeError(
+            f"DATA_URL geeft HTML terug i.p.v. het parquet-bestand.\n"
+            f"Final URL: {r.url}\n"
+            f"Gebruik een DIRECT DOWNLOAD link (zie voorbeelden hieronder)."
+        )
+
+    with open(dest, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+
+# Download 1x indien nodig
+if not os.path.exists(FILE):
+    if not DATA_URL:
+        st.error("DATA_URL ontbreekt. Zet DATA_URL in Streamlit Secrets.")
+        st.stop()
+    with st.status("Dataset downloaden…", expanded=True) as s:
+        st.write("Download URL (ingekort):", DATA_URL[:80] + "…")
+        download_file(DATA_URL, FILE)
+        s.update(label="Dataset gedownload", state="complete")
+
+
 # In jouw data:
 LON_COL = "GPS_x"   # longitude
 LAT_COL = "GPS_y"   # latitude
@@ -221,3 +271,4 @@ st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_conta
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
