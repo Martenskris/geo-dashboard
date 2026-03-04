@@ -10,9 +10,14 @@ import pyarrow.parquet as pq
 FILE = "TotaleTimetable_date.parquet"
 
 import os
-import requests
+import streamlit as st
 
-DATA_URL = os.getenv("DATA_URL", "").strip()
+DATA_URL = st.secrets.get("DATA_URL", os.getenv("DATA_URL", "")).strip()
+
+import requests
+import os
+
+FILE = "TotaleTimetable_date.parquet"
 
 if (not os.path.exists(FILE)) and DATA_URL:
     r = requests.get(DATA_URL, timeout=120)
@@ -214,4 +219,5 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
+
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
