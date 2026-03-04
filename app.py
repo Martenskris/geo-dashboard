@@ -92,33 +92,24 @@ def downsample_ordered(df, max_points=MAX_POINTS):
 
 
 def make_map_figure(sub_ok, start_dt, end_dt):
-    # Forceer numpy arrays
     lon = sub_ok[LON_COL].to_numpy(dtype=float)
     lat = sub_ok[LAT_COL].to_numpy(dtype=float)
 
-    # bounds
     lon_min, lon_max = np.nanmin(lon), np.nanmax(lon)
     lat_min, lat_max = np.nanmin(lat), np.nanmax(lat)
 
-    # center
     center_lon = float((lon_min + lon_max) / 2.0)
     center_lat = float((lat_min + lat_max) / 2.0)
 
-    # span (voorkom deling door 0)
     lon_span = float(max(lon_max - lon_min, 1e-6))
     lat_span = float(max(lat_max - lat_min, 1e-6))
 
-    # ruwe zoom-heuristiek (werkt prima in praktijk)
     zoom_lon = np.log2(360.0 / lon_span)
     zoom_lat = np.log2(180.0 / lat_span)
     zoom = float(np.clip(min(zoom_lon, zoom_lat) - 1.0, 1.0, 18.0))
 
     fig = go.Figure()
-
-    # track
     fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
-
-    # start/einde markers
     fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers",
                                    marker={"size": 10}, name="start"))
     fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers",
@@ -134,6 +125,7 @@ def make_map_figure(sub_ok, start_dt, end_dt):
         showlegend=False,
     )
     return fig
+
 
 def make_line_figure(x, y, title):
     fig = go.Figure()
@@ -178,13 +170,44 @@ sig1_default = choose_default(sig_candidates, ["GPS_speed", "TCO1_VehicleSpeed",
 sig2_default = choose_default(sig_candidates, ["GPS_course", "EEC2_AccPed1Position", "ET1_CoolantTemperature"])
 sig3_default = choose_default(sig_candidates, ["GPS_z", "AAI_Temperature1", "AMB_AirTemperature"])
 
+# ---- NIEUW: defaults éénmalig in session_state zetten zodat keuze blijft staan ----
+if "sig1" not in st.session_state:
+    st.session_state["sig1"] = sig1_default
+if "sig2" not in st.session_state:
+    st.session_state["sig2"] = sig2_default
+if "sig3" not in st.session_state:
+    st.session_state["sig3"] = sig3_default
+
+def safe_index(options, value, fallback):
+    """Zorg dat we altijd een geldige index hebben, ook als kolommen veranderen."""
+    if value in options:
+        return options.index(value)
+    if fallback in options:
+        return options.index(fallback)
+    return 0
+
 c1, c2, c3 = st.columns(3)
 with c1:
-    sig1 = st.selectbox("Signaal 1", sig_candidates, index=sig_candidates.index(sig1_default))
+    sig1 = st.selectbox(
+        "Signaal 1 (typ om te zoeken)",
+        sig_candidates,
+        index=safe_index(sig_candidates, st.session_state["sig1"], sig1_default),
+        key="sig1",  # <-- bewaart keuze automatisch in session_state
+    )
 with c2:
-    sig2 = st.selectbox("Signaal 2", sig_candidates, index=sig_candidates.index(sig2_default))
+    sig2 = st.selectbox(
+        "Signaal 2 (typ om te zoeken)",
+        sig_candidates,
+        index=safe_index(sig_candidates, st.session_state["sig2"], sig2_default),
+        key="sig2",
+    )
 with c3:
-    sig3 = st.selectbox("Signaal 3", sig_candidates, index=sig_candidates.index(sig3_default))
+    sig3 = st.selectbox(
+        "Signaal 3 (typ om te zoeken)",
+        sig_candidates,
+        index=safe_index(sig_candidates, st.session_state["sig3"], sig3_default),
+        key="sig3",
+    )
 
 df = load_columns(["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3])
 
@@ -195,7 +218,6 @@ if len(df) < 2:
 tmin_ts = df["Timestamp"].iloc[0]
 tmax_ts = df["Timestamp"].iloc[-1]
 
-# Streamlit slider wil python datetime
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
 
@@ -221,7 +243,6 @@ subp = downsample_ordered(sub, MAX_POINTS)
 # =======================
 st.subheader("GPS track (geselecteerd tijdvenster)")
 
-# Forceer GPS naar numeriek
 subp[LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
 subp[LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
 
@@ -241,7 +262,3 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
-
-
-
-
