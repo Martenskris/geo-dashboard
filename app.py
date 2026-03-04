@@ -52,8 +52,8 @@ if not os.path.exists(FILE):
 
 
 # In jouw data:
-LON_COL = "GPS_x"   # longitude
-LAT_COL = "GPS_y"   # latitude
+LAT_COL = "GPS_x"   # longitude
+LON_COL = "GPS_y"   # latitude
 
 # kolommen die geen "signalen" zijn (metadata)
 EXCLUDE = {"Time", "Seconds", "Minutes", "Hours", "Year", "Month", "Day"}
@@ -247,5 +247,6 @@ st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_conta
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
 
 
