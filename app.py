@@ -92,55 +92,48 @@ def downsample_ordered(df, max_points=MAX_POINTS):
 
 
 def make_map_figure(sub_ok, start_dt, end_dt):
-    # Maak een duidelijke kaart: lijn + start/eind marker + fitbounds
-    lon = sub_ok[LON_COL].to_numpy()
-    lat = sub_ok[LAT_COL].to_numpy()
+    # Forceer numpy arrays
+    lon = sub_ok[LON_COL].to_numpy(dtype=float)
+    lat = sub_ok[LAT_COL].to_numpy(dtype=float)
+
+    # bounds
+    lon_min, lon_max = np.nanmin(lon), np.nanmax(lon)
+    lat_min, lat_max = np.nanmin(lat), np.nanmax(lat)
+
+    # center
+    center_lon = float((lon_min + lon_max) / 2.0)
+    center_lat = float((lat_min + lat_max) / 2.0)
+
+    # span (voorkom deling door 0)
+    lon_span = float(max(lon_max - lon_min, 1e-6))
+    lat_span = float(max(lat_max - lat_min, 1e-6))
+
+    # ruwe zoom-heuristiek (werkt prima in praktijk)
+    zoom_lon = np.log2(360.0 / lon_span)
+    zoom_lat = np.log2(180.0 / lat_span)
+    zoom = float(np.clip(min(zoom_lon, zoom_lat) - 1.0, 1.0, 18.0))
 
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Scattermapbox(
-            lon=lon,
-            lat=lat,
-            mode="lines",
-            name="track"
-        )
-    )
+    # track
+    fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
 
-    # start marker
-    fig.add_trace(
-        go.Scattermapbox(
-            lon=[lon[0]],
-            lat=[lat[0]],
-            mode="markers",
-            marker={"size": 10},
-            name="start"
-        )
-    )
-
-    # end marker
-    fig.add_trace(
-        go.Scattermapbox(
-            lon=[lon[-1]],
-            lat=[lat[-1]],
-            mode="markers",
-            marker={"size": 10},
-            name="einde"
-        )
-    )
+    # start/einde markers
+    fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers",
+                                   marker={"size": 10}, name="start"))
+    fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers",
+                                   marker={"size": 10}, name="einde"))
 
     fig.update_layout(
-        mapbox={
-            "style": "open-street-map",
-            "fitbounds": "locations",   # <-- zorgt dat de selectie altijd in beeld komt
-        },
+        mapbox_style="open-street-map",
+        mapbox_center={"lat": center_lat, "lon": center_lon},
+        mapbox_zoom=zoom,
         margin=dict(l=0, r=0, t=30, b=0),
         height=450,
         title=f"GPS track: {start_dt} → {end_dt}",
-        showlegend=False
+        showlegend=False,
     )
     return fig
-
 
 def make_line_figure(x, y, title):
     fig = go.Figure()
@@ -248,6 +241,7 @@ else:
         )
 
     fig_map = make_map_figure(sub_ok, start_dt, end_dt)
+    st.plotly_chart(fig_map, use_container_width=True, key=f"map-{start_dt.isoformat()}-{end_dt.isoformat()}")
 
     # key mee laten veranderen met slider => Streamlit forceert her-render van de kaart
     map_key = f"map-{start_dt.isoformat()}-{end_dt.isoformat()}"
@@ -260,3 +254,4 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig1], sig1), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig2], sig2), use_container_width=True)
 st.plotly_chart(make_line_figure(subp["Timestamp"], subp[sig3], sig3), use_container_width=True)
+
