@@ -20,8 +20,8 @@ LON_COL = "GPS_y"   # latitude  (graden)
 EXCLUDE = {"Time", "Seconds", "Minutes", "Hours", "Year", "Month", "Day"}
 
 MAX_POINTS = 8000
-TIME_STEP = timedelta(minutes=1)     # ✅ tijdselectie per 1 minuut (slider)
-BIG_WINDOW = timedelta(hours=1)      # ✅ > 1 uur => warning + confirm voor export
+TIME_STEP = timedelta(minutes=1)     # slider stap
+BIG_WINDOW = timedelta(hours=1)      # > 1 uur => warning + confirm export
 
 # Secret in Streamlit Cloud
 GDRIVE_FILE_ID = st.secrets.get("GDRIVE_FILE_ID", "").strip()
@@ -90,11 +90,15 @@ def safe_index(options, value, fallback):
     return 0
 
 
+def floor_to_minute(dt: datetime) -> datetime:
+    return dt.replace(second=0, microsecond=0)
+
+
 @st.cache_data(show_spinner=False)
 def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
     """
-    Snel min/max Timestamp uit Parquet row-group statistics.
-    Fallback: Timestamp kolom lezen.
+    Snel min/max Timestamp uit Parquet row-group stats.
+    Fallback: Timestamp-kolom lezen.
     """
     pf = pq.ParquetFile(FILE)
 
@@ -142,7 +146,7 @@ def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
 @st.cache_data(show_spinner=False)
 def load_filtered(columns: list[str], start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     """
-    Leest enkel gevraagde kolommen en enkel rijen in tijdvenster (Parquet filter pushdown).
+    Leest enkel gevraagde kolommen en enkel rijen in tijdvenster (filter pushdown).
     """
     dataset = ds.dataset(FILE, format="parquet")
     filt = (ds.field("Timestamp") >= ds.scalar(start.to_pydatetime())) & (ds.field("Timestamp") <= ds.scalar(end.to_pydatetime()))
@@ -161,8 +165,10 @@ def load_filtered(columns: list[str], start: pd.Timestamp, end: pd.Timestamp) ->
 @st.cache_data(show_spinner=False)
 def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) -> pd.DataFrame:
     """
-    Preview over het VOLLEDIGE tijdsbereik, zonder de volledige kolom in RAM te laden.
-    -> streaming reservoir sampling (max_points) op Timestamp + 1 signaal, daarna sorteren op tijd.
+    Preview over VOLLEDIG tijdsbereik (downsampled) zonder alles in RAM te laden.
+    Reservoir sampling op Timestamp + 1 signaal, daarna sorteren op tijd.
+
+    ✅ FIX voor jouw error: gebruik dataset.scanner(...) i.p.v. dataset.scan(...)
     """
     dataset = ds.dataset(FILE, format="parquet")
     cols = ["Timestamp", signal]
@@ -172,9 +178,8 @@ def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) ->
     reservoir_val = []
     seen = 0
 
-    # Batches streamen
-    scanner = dataset.scan(columns=cols)
-    for batch in scanner.to_batches(batch_size=250_000):
+    scanner = dataset.scanner(columns=cols, batch_size=250_000)
+    for batch in scanner.to_batches():
         ts_arr = batch.column(0).to_pylist()
         val_arr = batch.column(1).to_pylist()
 
@@ -194,7 +199,9 @@ def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) ->
     if not reservoir_ts:
         return pd.DataFrame(columns=["Timestamp", signal])
 
-    df = pd.DataFrame({"Timestamp": pd.to_datetime(reservoir_ts, errors="coerce"), signal: reservoir_val})
+    df = pd.DataFrame(
+        {"Timestamp": pd.to_datetime(reservoir_ts, errors="coerce"), signal: reservoir_val}
+    )
     try:
         df["Timestamp"] = df["Timestamp"].dt.tz_localize(None)
     except Exception:
@@ -221,7 +228,6 @@ def make_map_figure(sub_ok, start_dt, end_dt):
     zoom = float(np.clip(min(zoom_lon, zoom_lat) - 1.0, 1.0, 18.0))
 
     fig = go.Figure()
-    # (Deprecation warnings zijn niet fataal; behouden voor compatibiliteit)
     fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
     fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers", marker={"size": 10}, name="start"))
     fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers", marker={"size": 10}, name="einde"))
@@ -243,7 +249,7 @@ def make_line_figure(x, y, title, selected_ts=None):
     fig.add_trace(go.Scatter(
         x=x, y=y,
         mode="lines+markers",
-        marker={"size": 8, "opacity": 0.01},  # klikbaar
+        marker={"size": 8, "opacity": 0.01},
         line={"width": 2},
         name=title
     ))
@@ -315,10 +321,6 @@ def plot_and_capture_click(fig, key):
     return p0.get("x") if isinstance(p0, dict) else getattr(p0, "x", None)
 
 
-def floor_to_minute(dt: datetime) -> datetime:
-    return dt.replace(second=0, microsecond=0)
-
-
 # =======================
 # UI
 # =======================
@@ -374,7 +376,7 @@ else:
     )
 
 # =======================
-# 2) Tijdvenster kiezen (1 minuut stappen) + laadbalk
+# 2) Tijdvenster kiezen (1 minuut stappen)
 # =======================
 st.divider()
 st.subheader("Tijdvenster kiezen (voor laden & downloaden)")
@@ -382,7 +384,6 @@ st.subheader("Tijdvenster kiezen (voor laden & downloaden)")
 tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = floor_to_minute(tmin_ts.to_pydatetime())
 tmax = floor_to_minute(tmax_ts.to_pydatetime())
-
 step = TIME_STEP
 
 
@@ -424,7 +425,7 @@ def update_from_inputs():
     st.session_state["time_slider"] = (s, e)
 
 
-# init state: start bij begin van dataset, eind = begin + 1 uur (of tmax)
+# init state: start bij begin dataset, eind = begin + 1 uur
 if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
     default_start = tmin
     default_end = min(tmax, default_start + BIG_WINDOW)
@@ -450,7 +451,7 @@ st.slider(
     min_value=tmin,
     max_value=tmax,
     value=(st.session_state["start_dt"], st.session_state["end_dt"]),
-    step=step,  # ✅ 1 minuut
+    step=step,
     key="time_slider",
     on_change=update_from_slider,
 )
@@ -459,9 +460,10 @@ start_dt = st.session_state["start_dt"]
 end_dt = st.session_state["end_dt"]
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
+duration = end - start
 
 # =======================
-# 3) Kies signalen voor grafieken + Download
+# 3) Kies signalen voor grafieken & download
 # =======================
 st.divider()
 st.subheader("Signalen kiezen voor grafieken & download")
@@ -492,9 +494,8 @@ if len(set(selected_signals)) != len(selected_signals):
     st.warning("Kies elk signaal maar één keer (geen duplicaten).")
     st.stop()
 
-# ✅ Nooit de volledige dataset: we laden enkel Timestamp + GPS + gekozen signalen, en enkel in het gekozen venster
+# ✅ Nooit volledige dataset: enkel Timestamp + GPS + gekozen signalen, en enkel in venster
 cols_needed = ["Timestamp", LON_COL, LAT_COL] + selected_signals
-duration = end - start
 
 # =======================
 # Download (CSV) - enkel geselecteerde signalen
@@ -516,9 +517,7 @@ if duration > BIG_WINDOW:
     first_hour_end = pd.Timestamp(first_hour_end_dt)
 
     export_first = load_filtered(cols_needed, start, first_hour_end)
-    csv_name_1h = (
-        f"selectie_EERSTE_UUR_{start_str}_tot_{pd.Timestamp(first_hour_end_dt).strftime('%Y%m%d_%H%M%S')}.csv"
-    )
+    csv_name_1h = f"selectie_EERSTE_UUR_{start_str}_tot_{pd.Timestamp(first_hour_end_dt).strftime('%Y%m%d_%H%M%S')}.csv"
     csv_bytes_1h = export_first.to_csv(index=False).encode("utf-8")
 
     st.download_button(
@@ -535,7 +534,7 @@ if duration > BIG_WINDOW:
     )
 
     if st.session_state.get(confirm_key, False):
-        export_full = load_filtered(cols_needed, start, end)  # ✅ enkel geselecteerde kolommen
+        export_full = load_filtered(cols_needed, start, end)
         csv_name_full = f"selectie_VOLLEDIG_{start_str}_tot_{end_str}.csv"
         csv_bytes_full = export_full.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -558,7 +557,7 @@ else:
     )
 
 # =======================
-# Visualisatie pas laden na knop
+# Visualisatie pas na knop
 # =======================
 st.subheader("Visualisatie")
 
@@ -566,10 +565,7 @@ if "load_confirmed" not in st.session_state:
     st.session_state["load_confirmed"] = False
 
 if duration > BIG_WINDOW:
-    st.warning(
-        "Je geselecteerde tijdslot is groter dan 1 uur. "
-        "Dit kan traag zijn of problemen geven in de app."
-    )
+    st.warning("Je geselecteerde tijdslot is groter dan 1 uur. Dit kan traag zijn of problemen geven in de app.")
 
 if st.button("✅ Laad nu data en toon kaart + grafieken", type="primary"):
     st.session_state["load_confirmed"] = True
