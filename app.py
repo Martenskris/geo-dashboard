@@ -19,7 +19,9 @@ LON_COL = "GPS_y"   # latitude  (graden)
 
 EXCLUDE = {"Time", "Seconds", "Minutes", "Hours", "Year", "Month", "Day"}
 MAX_POINTS = 8000
-DEFAULT_WINDOW = timedelta(hours=1)
+
+DEFAULT_WINDOW = timedelta(hours=1)          # initieel venster (licht)
+TIME_STEP = timedelta(minutes=1)            # ✅ tijdselectie per 1 minuut
 
 # Secret in Streamlit Cloud
 GDRIVE_FILE_ID = st.secrets.get("GDRIVE_FILE_ID", "").strip()
@@ -90,6 +92,10 @@ def safe_index(options, value, fallback):
 
 @st.cache_data(show_spinner=False)
 def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Probeert min/max Timestamp uit Parquet row-group statistics te halen (heel snel).
+    Fallback: Timestamp-kolom lezen.
+    """
     pf = pq.ParquetFile(FILE)
 
     try:
@@ -298,8 +304,7 @@ sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["GPS_speed"])
 
 # =======================
-# 1) Alleen: kies "preview signaal" + tijdvenster
-# 2) Klik op "Laad data" om alles voor dat venster te laden
+# 1) Tijdvenster kiezen op basis van 1 "preview signaal"
 # =======================
 st.subheader("1) Tijdvenster kiezen (preview op 1 signaal)")
 
@@ -310,15 +315,12 @@ preview_signal = st.selectbox(
     key="preview_signal",
 )
 
-# Tijdgrenzen snel uit metadata
 tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
 
-total_seconds = max(1, int((tmax - tmin).total_seconds()))
-step_seconds = max(1, total_seconds // 20000)
-step_seconds = min(step_seconds, 10)
-step = timedelta(seconds=step_seconds)
+# ✅ vaste stapgrootte 1 minuut
+step = TIME_STEP
 
 
 def clamp_dt(dt: datetime) -> datetime:
@@ -329,44 +331,49 @@ def clamp_dt(dt: datetime) -> datetime:
     return dt
 
 
+def floor_to_minute(dt: datetime) -> datetime:
+    return dt.replace(second=0, microsecond=0)
+
+
 def update_from_slider():
     s, e = st.session_state["time_slider"]
-    s = clamp_dt(s)
-    e = clamp_dt(e)
+    s = floor_to_minute(clamp_dt(s))
+    e = floor_to_minute(clamp_dt(e))
     if s >= e:
-        e = clamp_dt(s + step)
+        e = floor_to_minute(clamp_dt(s + step))
 
     st.session_state["start_dt"] = s
     st.session_state["end_dt"] = e
     st.session_state["start_date"] = s.date()
-    st.session_state["start_time"] = s.time()
+    st.session_state["start_time"] = s.time().replace(second=0, microsecond=0)
     st.session_state["end_date"] = e.date()
-    st.session_state["end_time"] = e.time()
+    st.session_state["end_time"] = e.time().replace(second=0, microsecond=0)
 
 
 def update_from_inputs():
     s = datetime.combine(st.session_state["start_date"], st.session_state["start_time"])
     e = datetime.combine(st.session_state["end_date"], st.session_state["end_time"])
-    s = clamp_dt(s)
-    e = clamp_dt(e)
+    s = floor_to_minute(clamp_dt(s))
+    e = floor_to_minute(clamp_dt(e))
     if s >= e:
-        e = clamp_dt(s + step)
+        e = floor_to_minute(clamp_dt(s + step))
 
     st.session_state["start_dt"] = s
     st.session_state["end_dt"] = e
     st.session_state["time_slider"] = (s, e)
 
 
-# init state (licht venster)
+# init state (licht venster: laatste uur)
 if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
-    default_end = tmax
-    default_start = max(tmin, tmax - DEFAULT_WINDOW)
+    default_end = floor_to_minute(tmax)
+    default_start = floor_to_minute(max(tmin, tmax - DEFAULT_WINDOW))
+
     st.session_state["start_dt"] = default_start
     st.session_state["end_dt"] = default_end
     st.session_state["start_date"] = default_start.date()
-    st.session_state["start_time"] = default_start.time()
+    st.session_state["start_time"] = default_start.time().replace(second=0, microsecond=0)
     st.session_state["end_date"] = default_end.date()
-    st.session_state["end_time"] = default_end.time()
+    st.session_state["end_time"] = default_end.time().replace(second=0, microsecond=0)
     st.session_state["time_slider"] = (default_start, default_end)
 
 cA, cB = st.columns(2)
@@ -382,7 +389,7 @@ st.slider(
     min_value=tmin,
     max_value=tmax,
     value=(st.session_state["start_dt"], st.session_state["end_dt"]),
-    step=step,
+    step=step,  # ✅ 1 minuut
     key="time_slider",
     on_change=update_from_slider,
 )
@@ -392,7 +399,7 @@ end_dt = st.session_state["end_dt"]
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
 
-# Preview laden: enkel preview_signal + Timestamp (klein!)
+# Preview laden: enkel preview_signal + Timestamp
 preview_df = load_filtered(["Timestamp", preview_signal], start, end)
 if len(preview_df) < 2:
     st.warning("Te weinig data in dit tijdvenster voor het preview signaal.")
@@ -403,7 +410,9 @@ else:
         width="stretch",
     )
 
-# Knop: pas dan volledige load
+# =======================
+# 2) Button om pas dan alles te laden
+# =======================
 st.divider()
 st.subheader("2) Laad volledige data voor dit tijdvenster")
 
@@ -418,7 +427,7 @@ if not st.session_state["load_confirmed"]:
     st.stop()
 
 # =======================
-# Vanaf hier: originele flow (maar alleen na button)
+# Vanaf hier: volledige visualisatie
 # =======================
 st.subheader("Signalen kiezen voor grafieken")
 
