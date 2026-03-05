@@ -129,9 +129,10 @@ def make_map_figure(sub_ok, start_dt, end_dt):
     return fig
 
 
-def make_line_figure(x, y, title):
+def make_line_figure(x, y, title, selected_ts=None):
     """
-    Lijnplot + onzichtbare markers zodat select-events altijd klikbare punten hebben.
+    Lijn + klikbare (quasi onzichtbare) markers.
+    + Verticale selectielijn (shape) over de volledige plothoogte.
     """
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -142,6 +143,7 @@ def make_line_figure(x, y, title):
         line={"width": 2},
         name=title
     ))
+
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, t=40, b=0),
@@ -150,6 +152,19 @@ def make_line_figure(x, y, title):
         showlegend=False,
         clickmode="event+select",
     )
+
+    # DUIDELIJKE selectielijn
+    if selected_ts is not None:
+        ts = pd.to_datetime(selected_ts)
+        fig.add_shape(
+            type="line",
+            x0=ts, x1=ts,
+            y0=0, y1=1,
+            xref="x", yref="paper",     # yref="paper" -> 0..1 over volledige hoogte
+            line={"width": 3},
+            layer="above",
+        )
+
     return fig
 
 
@@ -159,13 +174,6 @@ def safe_index(options, value, fallback):
     if fallback in options:
         return options.index(fallback)
     return 0
-
-
-def add_vline(fig, x):
-    if x is None:
-        return fig
-    fig.add_vline(x=pd.to_datetime(x), line_width=2)
-    return fig
 
 
 def nearest_values_at(df_full, ts, sig1, sig2, sig3):
@@ -199,9 +207,7 @@ def nearest_values_at(df_full, ts, sig1, sig2, sig3):
 
 def plot_and_capture_click(fig, key):
     """
-    Laat je "eender waar" klikken:
-    - We lezen de clickData uit plotly via select-event.
-    - Door onzichtbare markers is een klik op de lijn (bijna altijd) een punt-selectie.
+    Klik op (bijna) eender waar op de lijn => selecteert een punt (door markers).
     """
     ev = st.plotly_chart(
         fig,
@@ -228,20 +234,6 @@ def plot_and_capture_click(fig, key):
     if isinstance(p0, dict):
         return p0.get("x")
     return getattr(p0, "x", None)
-
-
-# =======================
-# Export helpers
-# =======================
-def make_csv_bytes(df_export: pd.DataFrame) -> bytes:
-    # UTF-8 with BOM => Excel vriendelijk
-    return df_export.to_csv(index=False).encode("utf-8-sig")
-
-
-def export_filename(start_dt, end_dt) -> str:
-    s = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
-    e = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
-    return f"tijdsvenster_{s}_tot_{e}.csv"
 
 
 # =======================
@@ -272,14 +264,12 @@ if not sig_candidates:
     st.error("Geen numerieke/logische signalen gevonden in de Parquet.")
     st.stop()
 
-# -----------------------
-# Nieuwe gewenste defaults
-# -----------------------
+# Defaults zoals gevraagd
 sig1_default = choose_default(sig_candidates, ["GPS_speed"])
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["EEC1_Speed"])
 
-# Keuze onthouden tussen reruns
+# Keuze onthouden
 if "sig1" not in st.session_state:
     st.session_state["sig1"] = sig1_default
 if "sig2" not in st.session_state:
@@ -324,7 +314,7 @@ tmax = tmax_ts.to_pydatetime()
 
 # Fijnere slider stap
 total_seconds = max(1, int((tmax - tmin).total_seconds()))
-step_seconds = max(1, total_seconds // 20000)  # nog fijner (~20.000 stapjes)
+step_seconds = max(1, total_seconds // 20000)  # ~20.000 stapjes
 step_seconds = min(step_seconds, 10)           # nooit grover dan 10s
 step = timedelta(seconds=step_seconds)
 
@@ -344,31 +334,6 @@ if len(sub) < 2:
     st.warning("Te weinig data in dit tijdvenster.")
     st.stop()
 
-# =======================
-# Export (toegevoegd, zonder rest te breken)
-# =======================
-st.subheader("Export geselecteerd tijdvenster")
-
-with st.container(border=True):
-    export_cols = ["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3]
-    export_df = sub[export_cols].copy()
-
-    # Optioneel: Timestamp als string (Excel-vriendelijk); laat rest ongemoeid
-    export_df["Timestamp"] = pd.to_datetime(export_df["Timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    csv_bytes = make_csv_bytes(export_df)
-    fname = export_filename(start_dt, end_dt)
-
-    st.download_button(
-        label="⬇️ Export naar CSV",
-        data=csv_bytes,
-        file_name=fname,
-        mime="text/csv",
-        use_container_width=True,
-    )
-    st.caption("Na klikken opent je browser het download-/opslaan-venster (daar kies je locatie).")
-
-# Downsample voor plots/kaart (zoals originele app)
 subp = downsample_ordered(sub, MAX_POINTS)
 
 # =======================
@@ -389,24 +354,21 @@ else:
     st.plotly_chart(fig_map, use_container_width=True)
 
 # =======================
-# 3 grafieken + meetlijn + waarden
+# 3 grafieken + selectielijn + waarden
 # =======================
 st.subheader("Signalen (geselecteerd tijdvenster)")
 
 if "clicked_ts" not in st.session_state:
     st.session_state["clicked_ts"] = None
 
-# figuren
-fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1)
-fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2)
-fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3)
+selected_ts = st.session_state["clicked_ts"]
 
-# meetlijn op huidige clicked_ts
-fig1 = add_vline(fig1, st.session_state["clicked_ts"])
-fig2 = add_vline(fig2, st.session_state["clicked_ts"])
-fig3 = add_vline(fig3, st.session_state["clicked_ts"])
+# figuren met zichtbare selectielijn
+fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1, selected_ts=selected_ts)
+fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2, selected_ts=selected_ts)
+fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3, selected_ts=selected_ts)
 
-# Klik op eender welke grafiek
+# klik op eender welke grafiek
 clicked1 = plot_and_capture_click(fig1, key="plot_sig1")
 clicked2 = plot_and_capture_click(fig2, key="plot_sig2")
 clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
@@ -414,15 +376,16 @@ clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
 new_click = clicked1 or clicked2 or clicked3
 if new_click is not None:
     st.session_state["clicked_ts"] = new_click
+    selected_ts = new_click  # voor consistentie in de rest van deze run
 
 # waardenkader (decimale cijfers)
-vals = nearest_values_at(df, st.session_state["clicked_ts"], sig1, sig2, sig3)
+vals = nearest_values_at(df, selected_ts, sig1, sig2, sig3)
 
 with st.container(border=True):
     st.markdown("### Meetpunt (klik in een grafiek)")
     if vals is None:
         st.write("Klik ergens op de lijn in een grafiek om het tijdstip te selecteren.")
-        st.caption("Door onzichtbare markers is een klik op de lijn selecteerbaar.")
+        st.caption("De verticale selectielijn verschijnt op alle drie grafieken.")
     else:
         st.write(f"**Timestamp:** {vals['Timestamp']}")
         cc1, cc2, cc3 = st.columns(3)
