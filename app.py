@@ -264,39 +264,33 @@ if not sig_candidates:
     st.error("Geen numerieke/logische signalen gevonden in de Parquet.")
     st.stop()
 
-# Defaults zoals gevraagd
-sig1_default = choose_default(sig_candidates, ["GPS_speed"])
+# Defaults (SIG1 en SIG3 omgewisseld)
+sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])          # was GPS_speed
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
-sig3_default = choose_default(sig_candidates, ["EEC1_Speed"])
+sig3_default = choose_default(sig_candidates, ["GPS_speed"])          # was EEC1_Speed
 
-# Keuze onthouden
-if "sig1" not in st.session_state:
-    st.session_state["sig1"] = sig1_default
-if "sig2" not in st.session_state:
-    st.session_state["sig2"] = sig2_default
-if "sig3" not in st.session_state:
-    st.session_state["sig3"] = sig3_default
-
+# Belangrijk: géén st.session_state["sig1"]=... vóór de widget,
+# anders krijg je de warning "default value + Session State API".
 c1, c2, c3 = st.columns(3)
 with c1:
     sig1 = st.selectbox(
         "Signaal 1 (typ om te zoeken)",
         sig_candidates,
-        index=safe_index(sig_candidates, st.session_state["sig1"], sig1_default),
+        index=safe_index(sig_candidates, st.session_state.get("sig1", sig1_default), sig1_default),
         key="sig1",
     )
 with c2:
     sig2 = st.selectbox(
         "Signaal 2 (typ om te zoeken)",
         sig_candidates,
-        index=safe_index(sig_candidates, st.session_state["sig2"], sig2_default),
+        index=safe_index(sig_candidates, st.session_state.get("sig2", sig2_default), sig2_default),
         key="sig2",
     )
 with c3:
     sig3 = st.selectbox(
         "Signaal 3 (typ om te zoeken)",
         sig_candidates,
-        index=safe_index(sig_candidates, st.session_state["sig3"], sig3_default),
+        index=safe_index(sig_candidates, st.session_state.get("sig3", sig3_default), sig3_default),
         key="sig3",
     )
 
@@ -335,13 +329,11 @@ if len(sub) < 2:
     st.stop()
 
 # =======================
-# Export geselecteerd tijdvenster (NIEUW)
+# Export geselecteerd tijdvenster (CSV)
 # =======================
-# Exporteert de *volledige* selectie (niet-downsampled) naar CSV
 export_cols = ["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3]
 export_df = sub[export_cols].copy()
 
-# Bestandsnaam met tijdvenster (zonder ':' zodat dit overal werkt)
 start_str = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
 end_str = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
 csv_name = f"selectie_{start_str}_tot_{end_str}.csv"
@@ -354,9 +346,6 @@ st.download_button(
     file_name=csv_name,
     mime="text/csv",
 )
-# =======================
-# Einde exportblok
-# =======================
 
 subp = downsample_ordered(sub, MAX_POINTS)
 
@@ -387,12 +376,10 @@ if "clicked_ts" not in st.session_state:
 
 selected_ts = st.session_state["clicked_ts"]
 
-# figuren met zichtbare selectielijn
 fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1, selected_ts=selected_ts)
 fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2, selected_ts=selected_ts)
 fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3, selected_ts=selected_ts)
 
-# klik op eender welke grafiek
 clicked1 = plot_and_capture_click(fig1, key="plot_sig1")
 clicked2 = plot_and_capture_click(fig2, key="plot_sig2")
 clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
@@ -400,9 +387,8 @@ clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
 new_click = clicked1 or clicked2 or clicked3
 if new_click is not None:
     st.session_state["clicked_ts"] = new_click
-    selected_ts = new_click  # voor consistentie in de rest van deze run
+    selected_ts = new_click
 
-# waardenkader (decimale cijfers)
 vals = nearest_values_at(df, selected_ts, sig1, sig2, sig3)
 
 with st.container(border=True):
