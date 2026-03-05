@@ -199,7 +199,7 @@ def nearest_values_at_multi(df_full, ts, signals):
 def plot_and_capture_click(fig, key):
     ev = st.plotly_chart(
         fig,
-        use_container_width=True,
+        width="stretch",  # ✅ vervangt use_container_width=True
         key=key,
         on_select="rerun",
         selection_mode=["points"],
@@ -352,7 +352,7 @@ if len(sub_ok) < 2:
     st.info("Geen (voldoende) geldige GPS punten in deze selectie.")
 else:
     fig_map = make_map_figure(sub_ok, start_dt, end_dt)
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, width="stretch")  # ✅
 
 # =======================
 # Grafieken + selectielijn + waarden
