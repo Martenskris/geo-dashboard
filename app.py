@@ -1,5 +1,5 @@
 import os
-from datetime import timedelta
+from datetime import timedelta, datetime, time as dtime
 
 import numpy as np
 import pandas as pd
@@ -95,7 +95,6 @@ def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
     """
     pf = pq.ParquetFile(FILE)
 
-    # Vind kolomindex van Timestamp
     try:
         ts_col_idx = pf.schema_arrow.get_field_index("Timestamp")
     except Exception:
@@ -111,7 +110,6 @@ def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
             stats = col.statistics
             if stats is None:
                 continue
-            # stats.min/max kunnen bytes/strings/datetime zijn -> naar pandas
             try:
                 rg_min = pd.to_datetime(stats.min)
                 rg_max = pd.to_datetime(stats.max)
@@ -123,7 +121,6 @@ def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
                 tmax = rg_max if (tmax is None or rg_max > tmax) else tmax
 
     if tmin is None or tmax is None:
-        # Fallback: lees enkel Timestamp kolom
         df_ts = pd.read_parquet(FILE, columns=["Timestamp"], engine="pyarrow")
         df_ts["Timestamp"] = pd.to_datetime(df_ts["Timestamp"], errors="coerce")
         try:
@@ -134,24 +131,13 @@ def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
         tmin = df_ts["Timestamp"].iloc[0]
         tmax = df_ts["Timestamp"].iloc[-1]
 
-    # tz-naive voor slider
-    try:
-        tmin = pd.Timestamp(tmin).tz_localize(None)
-    except Exception:
-        tmin = pd.Timestamp(tmin)
-    try:
-        tmax = pd.Timestamp(tmax).tz_localize(None)
-    except Exception:
-        tmax = pd.Timestamp(tmax)
-
+    tmin = pd.Timestamp(tmin).tz_localize(None) if getattr(pd.Timestamp(tmin), "tzinfo", None) else pd.Timestamp(tmin)
+    tmax = pd.Timestamp(tmax).tz_localize(None) if getattr(pd.Timestamp(tmax), "tzinfo", None) else pd.Timestamp(tmax)
     return tmin, tmax
 
 
 @st.cache_data(show_spinner=False)
 def load_filtered(columns: list[str], start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """
-    Leest enkel gevraagde kolommen en enkel rijen in tijdvenster via Parquet filter pushdown.
-    """
     dataset = ds.dataset(FILE, format="parquet")
     filt = (ds.field("Timestamp") >= ds.scalar(start.to_pydatetime())) & (ds.field("Timestamp") <= ds.scalar(end.to_pydatetime()))
     table = dataset.to_table(columns=columns, filter=filt)
@@ -167,7 +153,6 @@ def load_filtered(columns: list[str], start: pd.Timestamp, end: pd.Timestamp) ->
 
 
 def make_map_figure(sub_ok, start_dt, end_dt):
-    # (laat je bestaande mapbox-code staan; dit is enkel een warning, geen crash)
     lon = sub_ok[LON_COL].to_numpy(dtype=float)
     lat = sub_ok[LAT_COL].to_numpy(dtype=float)
 
@@ -186,10 +171,8 @@ def make_map_figure(sub_ok, start_dt, end_dt):
 
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
-    fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers",
-                                   marker={"size": 10}, name="start"))
-    fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers",
-                                   marker={"size": 10}, name="einde"))
+    fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers", marker={"size": 10}, name="start"))
+    fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers", marker={"size": 10}, name="einde"))
 
     fig.update_layout(
         mapbox_style="open-street-map",
@@ -263,7 +246,6 @@ def nearest_values_at_multi(df_full, ts, signals):
 
 
 def plot_and_capture_click(fig, key):
-    # ✅ use_container_width vervangen
     ev = st.plotly_chart(
         fig,
         width="stretch",
@@ -272,12 +254,7 @@ def plot_and_capture_click(fig, key):
         selection_mode=["points"],
     )
 
-    sel = None
-    if isinstance(ev, dict):
-        sel = ev.get("selection")
-    else:
-        sel = getattr(ev, "selection", None)
-
+    sel = ev.get("selection") if isinstance(ev, dict) else getattr(ev, "selection", None)
     if not sel:
         return None
 
@@ -286,9 +263,7 @@ def plot_and_capture_click(fig, key):
         return None
 
     p0 = points[0]
-    if isinstance(p0, dict):
-        return p0.get("x")
-    return getattr(p0, "x", None)
+    return p0.get("x") if isinstance(p0, dict) else getattr(p0, "x", None)
 
 
 # =======================
@@ -318,7 +293,7 @@ if not sig_candidates:
     st.error("Geen numerieke/logische signalen gevonden in de Parquet.")
     st.stop()
 
-# Defaults (SIG1 en SIG3 omgewisseld t.o.v. vroeger)
+# Defaults (SIG1 en SIG3 omgewisseld)
 sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["GPS_speed"])
@@ -352,7 +327,9 @@ if len(set(selected_signals)) != len(selected_signals):
     st.warning("Kies elk signaal maar één keer (geen duplicaten).")
     st.stop()
 
-# Tijdvenster: snel via metadata
+# =======================
+# Tijdvenster: slider + manuele invoervakken (gesynchroniseerd)
+# =======================
 tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
@@ -362,13 +339,77 @@ step_seconds = max(1, total_seconds // 20000)
 step_seconds = min(step_seconds, 10)
 step = timedelta(seconds=step_seconds)
 
-start_dt, end_dt = st.slider(
+
+def clamp_dt(dt: datetime) -> datetime:
+    if dt < tmin:
+        return tmin
+    if dt > tmax:
+        return tmax
+    return dt
+
+
+def update_from_slider():
+    s, e = st.session_state["time_slider"]
+    s = clamp_dt(s)
+    e = clamp_dt(e)
+    if s >= e:
+        e = clamp_dt(s + step)
+
+    st.session_state["start_dt"] = s
+    st.session_state["end_dt"] = e
+    st.session_state["start_date"] = s.date()
+    st.session_state["start_time"] = s.time()
+    st.session_state["end_date"] = e.date()
+    st.session_state["end_time"] = e.time()
+
+
+def update_from_inputs():
+    s = datetime.combine(st.session_state["start_date"], st.session_state["start_time"])
+    e = datetime.combine(st.session_state["end_date"], st.session_state["end_time"])
+    s = clamp_dt(s)
+    e = clamp_dt(e)
+    if s >= e:
+        e = clamp_dt(s + step)
+
+    st.session_state["start_dt"] = s
+    st.session_state["end_dt"] = e
+    st.session_state["time_slider"] = (s, e)
+
+
+# init state (1x)
+if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
+    st.session_state["start_dt"] = tmin
+    st.session_state["end_dt"] = tmax
+    st.session_state["start_date"] = tmin.date()
+    st.session_state["start_time"] = tmin.time()
+    st.session_state["end_date"] = tmax.date()
+    st.session_state["end_time"] = tmax.time()
+    st.session_state["time_slider"] = (tmin, tmax)
+
+st.subheader("Tijdvenster")
+
+# Manuele invoer
+cA, cB = st.columns(2)
+with cA:
+    st.date_input("Start datum", key="start_date", on_change=update_from_inputs)
+    st.time_input("Start tijd", key="start_time", on_change=update_from_inputs)
+with cB:
+    st.date_input("Eind datum", key="end_date", on_change=update_from_inputs)
+    st.time_input("Eind tijd", key="end_time", on_change=update_from_inputs)
+
+# Slider (blijft ook werken, en vult de vakken aan)
+st.slider(
     "Tijdvenster (start/einde)",
     min_value=tmin,
     max_value=tmax,
-    value=(tmin, tmax),
+    value=(st.session_state["start_dt"], st.session_state["end_dt"]),
     step=step,
+    key="time_slider",
+    on_change=update_from_slider,
 )
+
+start_dt = st.session_state["start_dt"]
+end_dt = st.session_state["end_dt"]
 
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
@@ -404,7 +445,6 @@ subp = downsample_ordered(df, MAX_POINTS).copy()
 # =======================
 st.subheader("GPS track (geselecteerd tijdvenster)")
 
-# .loc om SettingWithCopyWarning te vermijden
 subp.loc[:, LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
 subp.loc[:, LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
 
@@ -415,7 +455,7 @@ if len(sub_ok) < 2:
     st.info("Geen (voldoende) geldige GPS punten in deze selectie.")
 else:
     fig_map = make_map_figure(sub_ok, start_dt, end_dt)
-    st.plotly_chart(fig_map, width="stretch")  # ✅
+    st.plotly_chart(fig_map, width="stretch")
 
 # =======================
 # Grafieken + selectielijn + waarden
@@ -432,7 +472,6 @@ for i, sig in enumerate(selected_signals, start=1):
     fig = make_line_figure(subp["Timestamp"], subp[sig], sig, selected_ts=selected_ts)
     clicked = plot_and_capture_click(fig, key=f"plot_sig{i}")
 
-    # geen `or` gebruiken met timestamps
     if clicked_any is None and clicked is not None:
         clicked_any = clicked
 
