@@ -173,6 +173,7 @@ def make_map_figure(sub_ok, start_dt, end_dt):
     zoom = float(np.clip(min(zoom_lon, zoom_lat) - 1.0, 1.0, 18.0))
 
     fig = go.Figure()
+    # warnings over scattermapbox zijn niet fataal; behouden voor compatibiliteit
     fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
     fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers",
                                    marker={"size": 10}, name="start"))
@@ -319,7 +320,7 @@ tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
 
-# ✅ vaste stapgrootte 1 minuut
+# ✅ vaste stapgrootte 1 minuut (slider) + time_input step=60
 step = TIME_STEP
 
 
@@ -379,10 +380,10 @@ if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
 cA, cB = st.columns(2)
 with cA:
     st.date_input("Start datum", key="start_date", on_change=update_from_inputs)
-    st.time_input("Start tijd", key="start_time", on_change=update_from_inputs)
+    st.time_input("Start tijd", key="start_time", step=60, on_change=update_from_inputs)  # ✅ 1 minuut
 with cB:
     st.date_input("Eind datum", key="end_date", on_change=update_from_inputs)
-    st.time_input("Eind tijd", key="end_time", on_change=update_from_inputs)
+    st.time_input("Eind tijd", key="end_time", step=60, on_change=update_from_inputs)    # ✅ 1 minuut
 
 st.slider(
     "Tijdvenster (start/einde)",
