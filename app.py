@@ -1,5 +1,5 @@
 import os
-from datetime import timedelta, datetime, time as dtime
+from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,7 @@ LON_COL = "GPS_y"   # latitude  (graden)
 
 EXCLUDE = {"Time", "Seconds", "Minutes", "Hours", "Year", "Month", "Day"}
 MAX_POINTS = 8000
+DEFAULT_WINDOW = timedelta(hours=1)
 
 # Secret in Streamlit Cloud
 GDRIVE_FILE_ID = st.secrets.get("GDRIVE_FILE_ID", "").strip()
@@ -89,10 +90,6 @@ def safe_index(options, value, fallback):
 
 @st.cache_data(show_spinner=False)
 def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
-    """
-    Probeert min/max Timestamp uit Parquet row-group statistics te halen (heel snel).
-    Fallback: Timestamp-kolom lezen.
-    """
     pf = pq.ParquetFile(FILE)
 
     try:
@@ -171,8 +168,10 @@ def make_map_figure(sub_ok, start_dt, end_dt):
 
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(lon=lon, lat=lat, mode="lines", name="track"))
-    fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers", marker={"size": 10}, name="start"))
-    fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers", marker={"size": 10}, name="einde"))
+    fig.add_trace(go.Scattermapbox(lon=[lon[0]], lat=[lat[0]], mode="markers",
+                                   marker={"size": 10}, name="start"))
+    fig.add_trace(go.Scattermapbox(lon=[lon[-1]], lat=[lat[-1]], mode="markers",
+                                   marker={"size": 10}, name="einde"))
 
     fig.update_layout(
         mapbox_style="open-street-map",
@@ -192,7 +191,7 @@ def make_line_figure(x, y, title, selected_ts=None):
         x=x,
         y=y,
         mode="lines+markers",
-        marker={"size": 8, "opacity": 0.01},  # klikbaar
+        marker={"size": 8, "opacity": 0.01},
         line={"width": 2},
         name=title
     ))
@@ -298,38 +297,20 @@ sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["GPS_speed"])
 
-st.subheader("Signalen kiezen")
-
-max_n = max(1, min(len(sig_candidates), 12))
-n_signals = st.slider("Aantal signalen in grafieken", 1, max_n, value=min(3, max_n), step=1)
-
-selected_signals = []
-defaults = [sig1_default, sig2_default, sig3_default]
-
-for i in range(n_signals):
-    default_i = defaults[i] if i < len(defaults) else None
-
-    if default_i is None or default_i in selected_signals:
-        for c in sig_candidates:
-            if c not in selected_signals:
-                default_i = c
-                break
-
-    key = f"sig{i+1}"
-    label = f"Signaal {i+1} (typ om te zoeken)"
-    value_for_index = st.session_state.get(key, default_i)
-    idx = safe_index(sig_candidates, value_for_index, default_i)
-
-    chosen = st.selectbox(label, sig_candidates, index=idx, key=key)
-    selected_signals.append(chosen)
-
-if len(set(selected_signals)) != len(selected_signals):
-    st.warning("Kies elk signaal maar één keer (geen duplicaten).")
-    st.stop()
-
 # =======================
-# Tijdvenster: slider + manuele invoervakken (gesynchroniseerd)
+# 1) Alleen: kies "preview signaal" + tijdvenster
+# 2) Klik op "Laad data" om alles voor dat venster te laden
 # =======================
+st.subheader("1) Tijdvenster kiezen (preview op 1 signaal)")
+
+preview_signal = st.selectbox(
+    "Preview signaal voor tijdselectie",
+    sig_candidates,
+    index=safe_index(sig_candidates, st.session_state.get("preview_signal", sig1_default), sig1_default),
+    key="preview_signal",
+)
+
+# Tijdgrenzen snel uit metadata
 tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
@@ -376,19 +357,18 @@ def update_from_inputs():
     st.session_state["time_slider"] = (s, e)
 
 
-# init state (1x)
+# init state (licht venster)
 if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
-    st.session_state["start_dt"] = tmin
-    st.session_state["end_dt"] = tmax
-    st.session_state["start_date"] = tmin.date()
-    st.session_state["start_time"] = tmin.time()
-    st.session_state["end_date"] = tmax.date()
-    st.session_state["end_time"] = tmax.time()
-    st.session_state["time_slider"] = (tmin, tmax)
+    default_end = tmax
+    default_start = max(tmin, tmax - DEFAULT_WINDOW)
+    st.session_state["start_dt"] = default_start
+    st.session_state["end_dt"] = default_end
+    st.session_state["start_date"] = default_start.date()
+    st.session_state["start_time"] = default_start.time()
+    st.session_state["end_date"] = default_end.date()
+    st.session_state["end_time"] = default_end.time()
+    st.session_state["time_slider"] = (default_start, default_end)
 
-st.subheader("Tijdvenster")
-
-# Manuele invoer
 cA, cB = st.columns(2)
 with cA:
     st.date_input("Start datum", key="start_date", on_change=update_from_inputs)
@@ -397,7 +377,6 @@ with cB:
     st.date_input("Eind datum", key="end_date", on_change=update_from_inputs)
     st.time_input("Eind tijd", key="end_time", on_change=update_from_inputs)
 
-# Slider (blijft ook werken, en vult de vakken aan)
 st.slider(
     "Tijdvenster (start/einde)",
     min_value=tmin,
@@ -410,27 +389,78 @@ st.slider(
 
 start_dt = st.session_state["start_dt"]
 end_dt = st.session_state["end_dt"]
-
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
 
-# Data laden PAS NU (filter + alleen nodige kolommen)
+# Preview laden: enkel preview_signal + Timestamp (klein!)
+preview_df = load_filtered(["Timestamp", preview_signal], start, end)
+if len(preview_df) < 2:
+    st.warning("Te weinig data in dit tijdvenster voor het preview signaal.")
+else:
+    prev_ds = downsample_ordered(preview_df, MAX_POINTS)
+    st.plotly_chart(
+        make_line_figure(prev_ds["Timestamp"], prev_ds[preview_signal], f"Preview: {preview_signal}"),
+        width="stretch",
+    )
+
+# Knop: pas dan volledige load
+st.divider()
+st.subheader("2) Laad volledige data voor dit tijdvenster")
+
+if "load_confirmed" not in st.session_state:
+    st.session_state["load_confirmed"] = False
+
+if st.button("✅ Laad nu alle data voor dit tijdslot", type="primary"):
+    st.session_state["load_confirmed"] = True
+
+if not st.session_state["load_confirmed"]:
+    st.info("Kies een tijdvenster (preview) en klik daarna op **Laad nu alle data**.")
+    st.stop()
+
+# =======================
+# Vanaf hier: originele flow (maar alleen na button)
+# =======================
+st.subheader("Signalen kiezen voor grafieken")
+
+max_n = max(1, min(len(sig_candidates), 12))
+n_signals = st.slider("Aantal signalen in grafieken", 1, max_n, value=min(3, max_n), step=1)
+
+selected_signals = []
+defaults = [sig1_default, sig2_default, sig3_default]
+
+for i in range(n_signals):
+    default_i = defaults[i] if i < len(defaults) else None
+
+    if default_i is None or default_i in selected_signals:
+        for c in sig_candidates:
+            if c not in selected_signals:
+                default_i = c
+                break
+
+    key = f"sig{i+1}"
+    label = f"Signaal {i+1} (typ om te zoeken)"
+    value_for_index = st.session_state.get(key, default_i)
+    idx = safe_index(sig_candidates, value_for_index, default_i)
+
+    chosen = st.selectbox(label, sig_candidates, index=idx, key=key)
+    selected_signals.append(chosen)
+
+if len(set(selected_signals)) != len(selected_signals):
+    st.warning("Kies elk signaal maar één keer (geen duplicaten).")
+    st.stop()
+
 cols_needed = ["Timestamp", LON_COL, LAT_COL] + selected_signals
 df = load_filtered(cols_needed, start, end)
-
 if len(df) < 2:
     st.warning("Te weinig data in dit tijdvenster.")
     st.stop()
 
-# =======================
-# Export geselecteerd tijdvenster (CSV)
-# =======================
+# Export (neemt alle gekozen signalen mee)
 export_df = df[cols_needed].copy()
 start_str = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
 end_str = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
 csv_name = f"selectie_{start_str}_tot_{end_str}.csv"
 csv_bytes = export_df.to_csv(index=False).encode("utf-8")
-
 st.download_button(
     label="⬇️ Download geselecteerd tijdvenster (CSV)",
     data=csv_bytes,
@@ -440,28 +470,20 @@ st.download_button(
 
 subp = downsample_ordered(df, MAX_POINTS).copy()
 
-# =======================
 # Kaart
-# =======================
 st.subheader("GPS track (geselecteerd tijdvenster)")
-
 subp.loc[:, LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
 subp.loc[:, LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
-
 sub_ok = subp.dropna(subset=[LON_COL, LAT_COL])
 sub_ok = sub_ok[np.isfinite(sub_ok[LON_COL]) & np.isfinite(sub_ok[LAT_COL])]
 
 if len(sub_ok) < 2:
     st.info("Geen (voldoende) geldige GPS punten in deze selectie.")
 else:
-    fig_map = make_map_figure(sub_ok, start_dt, end_dt)
-    st.plotly_chart(fig_map, width="stretch")
+    st.plotly_chart(make_map_figure(sub_ok, start_dt, end_dt), width="stretch")
 
-# =======================
-# Grafieken + selectielijn + waarden
-# =======================
+# Grafieken + selectielijn
 st.subheader("Signalen (geselecteerd tijdvenster)")
-
 if "clicked_ts" not in st.session_state:
     st.session_state["clicked_ts"] = None
 
@@ -471,7 +493,6 @@ clicked_any = None
 for i, sig in enumerate(selected_signals, start=1):
     fig = make_line_figure(subp["Timestamp"], subp[sig], sig, selected_ts=selected_ts)
     clicked = plot_and_capture_click(fig, key=f"plot_sig{i}")
-
     if clicked_any is None and clicked is not None:
         clicked_any = clicked
 
@@ -488,7 +509,6 @@ with st.container(border=True):
         st.caption("De verticale selectielijn verschijnt op alle grafieken.")
     else:
         st.write(f"**Timestamp:** {vals['Timestamp']}")
-
         per_row = 3
         for r in range(0, len(selected_signals), per_row):
             row_sigs = selected_signals[r:r + per_row]
