@@ -31,11 +31,12 @@ def ensure_dataset():
         return
 
     if not GDRIVE_FILE_ID:
-        st.error("Dataset niet beschikbaar: de beheerder moet de Drive-koppeling configureren.")
+        st.error("Secret GDRIVE_FILE_ID ontbreekt (App settings → Secrets).")
         st.stop()
 
     url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}&export=download"
     with st.status("Dataset downloaden van Google Drive…", expanded=True) as s:
+        st.write("Drive file id:", GDRIVE_FILE_ID)
         try:
             gdown.download(url, FILE, quiet=False, fuzzy=True)
         except Exception as e:
@@ -229,12 +230,15 @@ def plot_and_capture_click(fig, key):
     return getattr(p0, "x", None)
 
 
+# =======================
+# Export helpers
+# =======================
 def make_csv_bytes(df_export: pd.DataFrame) -> bytes:
-    # CSV bytes (UTF-8 with BOM helps Excel)
+    # UTF-8 with BOM => Excel vriendelijk
     return df_export.to_csv(index=False).encode("utf-8-sig")
 
 
-def safe_filename_from_range(start_dt, end_dt) -> str:
+def export_filename(start_dt, end_dt) -> str:
     s = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
     e = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
     return f"tijdsvenster_{s}_tot_{e}.csv"
@@ -306,7 +310,7 @@ with c3:
         key="sig3",
     )
 
-# Data laden (nodige kolommen)
+# Data laden
 df = load_columns(["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3])
 
 if len(df) < 2:
@@ -320,7 +324,7 @@ tmax = tmax_ts.to_pydatetime()
 
 # Fijnere slider stap
 total_seconds = max(1, int((tmax - tmin).total_seconds()))
-step_seconds = max(1, total_seconds // 20000)  # ~20.000 stapjes
+step_seconds = max(1, total_seconds // 20000)  # nog fijner (~20.000 stapjes)
 step_seconds = min(step_seconds, 10)           # nooit grover dan 10s
 step = timedelta(seconds=step_seconds)
 
@@ -335,38 +339,36 @@ start_dt, end_dt = st.slider(
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
 
-# Subset voor geselecteerd venster (volledig, niet gedownsampeld)
 sub = df[(df["Timestamp"] >= start) & (df["Timestamp"] <= end)].copy()
 if len(sub) < 2:
     st.warning("Te weinig data in dit tijdvenster.")
     st.stop()
 
 # =======================
-# Export sectie
+# Export (toegevoegd, zonder rest te breken)
 # =======================
-st.subheader("Export")
+st.subheader("Export geselecteerd tijdvenster")
 
 with st.container(border=True):
-    st.write("Exporteer het geselecteerde tijdvenster naar CSV.")
     export_cols = ["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3]
     export_df = sub[export_cols].copy()
 
-    # optional: format Timestamp as ISO string for nicer CSV
-    export_df["Timestamp"] = pd.to_datetime(export_df["Timestamp"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    # Optioneel: Timestamp als string (Excel-vriendelijk); laat rest ongemoeid
+    export_df["Timestamp"] = pd.to_datetime(export_df["Timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
 
     csv_bytes = make_csv_bytes(export_df)
-    filename = safe_filename_from_range(start_dt, end_dt)
+    fname = export_filename(start_dt, end_dt)
 
     st.download_button(
-        label="⬇️ Export geselecteerd tijdvenster → CSV",
+        label="⬇️ Export naar CSV",
         data=csv_bytes,
-        file_name=filename,
+        file_name=fname,
         mime="text/csv",
         use_container_width=True,
     )
-    st.caption("Na klik opent je browser het opslaan-download venster (daar kies je map/naam).")
+    st.caption("Na klikken opent je browser het download-/opslaan-venster (daar kies je locatie).")
 
-# Downsample enkel voor visualisatie
+# Downsample voor plots/kaart (zoals originele app)
 subp = downsample_ordered(sub, MAX_POINTS)
 
 # =======================
@@ -394,14 +396,17 @@ st.subheader("Signalen (geselecteerd tijdvenster)")
 if "clicked_ts" not in st.session_state:
     st.session_state["clicked_ts"] = None
 
+# figuren
 fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1)
 fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2)
 fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3)
 
+# meetlijn op huidige clicked_ts
 fig1 = add_vline(fig1, st.session_state["clicked_ts"])
 fig2 = add_vline(fig2, st.session_state["clicked_ts"])
 fig3 = add_vline(fig3, st.session_state["clicked_ts"])
 
+# Klik op eender welke grafiek
 clicked1 = plot_and_capture_click(fig1, key="plot_sig1")
 clicked2 = plot_and_capture_click(fig2, key="plot_sig2")
 clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
@@ -410,6 +415,7 @@ new_click = clicked1 or clicked2 or clicked3
 if new_click is not None:
     st.session_state["clicked_ts"] = new_click
 
+# waardenkader (decimale cijfers)
 vals = nearest_values_at(df, st.session_state["clicked_ts"], sig1, sig2, sig3)
 
 with st.container(border=True):
