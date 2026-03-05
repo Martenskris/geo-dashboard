@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 import gdown
 
 # =======================
@@ -70,21 +71,6 @@ def choose_default(candidates, preferred_list):
     return candidates[0] if candidates else None
 
 
-@st.cache_data
-def load_columns(columns):
-    df = pd.read_parquet(FILE, columns=columns, engine="pyarrow")
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-
-    # tz-naive (Streamlit slider wil dit)
-    try:
-        df["Timestamp"] = df["Timestamp"].dt.tz_localize(None)
-    except Exception:
-        pass
-
-    df = df.dropna(subset=["Timestamp"]).sort_values("Timestamp")
-    return df
-
-
 def downsample_ordered(df, max_points=MAX_POINTS):
     n = len(df)
     if n <= max_points:
@@ -93,7 +79,95 @@ def downsample_ordered(df, max_points=MAX_POINTS):
     return df.iloc[idx]
 
 
+def safe_index(options, value, fallback):
+    if value in options:
+        return options.index(value)
+    if fallback in options:
+        return options.index(fallback)
+    return 0
+
+
+@st.cache_data(show_spinner=False)
+def get_time_bounds_from_metadata() -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Probeert min/max Timestamp uit Parquet row-group statistics te halen (heel snel).
+    Fallback: Timestamp-kolom lezen.
+    """
+    pf = pq.ParquetFile(FILE)
+
+    # Vind kolomindex van Timestamp
+    try:
+        ts_col_idx = pf.schema_arrow.get_field_index("Timestamp")
+    except Exception:
+        ts_col_idx = None
+
+    tmin = None
+    tmax = None
+
+    if ts_col_idx is not None and ts_col_idx >= 0 and pf.metadata is not None:
+        md = pf.metadata
+        for rg in range(md.num_row_groups):
+            col = md.row_group(rg).column(ts_col_idx)
+            stats = col.statistics
+            if stats is None:
+                continue
+            # stats.min/max kunnen bytes/strings/datetime zijn -> naar pandas
+            try:
+                rg_min = pd.to_datetime(stats.min)
+                rg_max = pd.to_datetime(stats.max)
+            except Exception:
+                continue
+            if pd.notna(rg_min):
+                tmin = rg_min if (tmin is None or rg_min < tmin) else tmin
+            if pd.notna(rg_max):
+                tmax = rg_max if (tmax is None or rg_max > tmax) else tmax
+
+    if tmin is None or tmax is None:
+        # Fallback: lees enkel Timestamp kolom
+        df_ts = pd.read_parquet(FILE, columns=["Timestamp"], engine="pyarrow")
+        df_ts["Timestamp"] = pd.to_datetime(df_ts["Timestamp"], errors="coerce")
+        try:
+            df_ts["Timestamp"] = df_ts["Timestamp"].dt.tz_localize(None)
+        except Exception:
+            pass
+        df_ts = df_ts.dropna(subset=["Timestamp"]).sort_values("Timestamp")
+        tmin = df_ts["Timestamp"].iloc[0]
+        tmax = df_ts["Timestamp"].iloc[-1]
+
+    # tz-naive voor slider
+    try:
+        tmin = pd.Timestamp(tmin).tz_localize(None)
+    except Exception:
+        tmin = pd.Timestamp(tmin)
+    try:
+        tmax = pd.Timestamp(tmax).tz_localize(None)
+    except Exception:
+        tmax = pd.Timestamp(tmax)
+
+    return tmin, tmax
+
+
+@st.cache_data(show_spinner=False)
+def load_filtered(columns: list[str], start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """
+    Leest enkel gevraagde kolommen en enkel rijen in tijdvenster via Parquet filter pushdown.
+    """
+    dataset = ds.dataset(FILE, format="parquet")
+    filt = (ds.field("Timestamp") >= ds.scalar(start.to_pydatetime())) & (ds.field("Timestamp") <= ds.scalar(end.to_pydatetime()))
+    table = dataset.to_table(columns=columns, filter=filt)
+
+    df = table.to_pandas()
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+    try:
+        df["Timestamp"] = df["Timestamp"].dt.tz_localize(None)
+    except Exception:
+        pass
+    df = df.dropna(subset=["Timestamp"]).sort_values("Timestamp")
+    return df
+
+
 def make_map_figure(sub_ok, start_dt, end_dt):
+    # (laat je bestaande mapbox-code staan; dit is enkel een warning, geen crash)
     lon = sub_ok[LON_COL].to_numpy(dtype=float)
     lat = sub_ok[LAT_COL].to_numpy(dtype=float)
 
@@ -135,7 +209,7 @@ def make_line_figure(x, y, title, selected_ts=None):
         x=x,
         y=y,
         mode="lines+markers",
-        marker={"size": 8, "opacity": 0.01},  # quasi onzichtbaar maar klikbaar
+        marker={"size": 8, "opacity": 0.01},  # klikbaar
         line={"width": 2},
         name=title
     ))
@@ -161,14 +235,6 @@ def make_line_figure(x, y, title, selected_ts=None):
         )
 
     return fig
-
-
-def safe_index(options, value, fallback):
-    if value in options:
-        return options.index(value)
-    if fallback in options:
-        return options.index(fallback)
-    return 0
 
 
 def nearest_values_at_multi(df_full, ts, signals):
@@ -197,9 +263,10 @@ def nearest_values_at_multi(df_full, ts, signals):
 
 
 def plot_and_capture_click(fig, key):
+    # ✅ use_container_width vervangen
     ev = st.plotly_chart(
         fig,
-        width="stretch",  # ✅ vervangt use_container_width=True
+        width="stretch",
         key=key,
         on_select="rerun",
         selection_mode=["points"],
@@ -252,9 +319,9 @@ if not sig_candidates:
     st.stop()
 
 # Defaults (SIG1 en SIG3 omgewisseld t.o.v. vroeger)
-sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])          # was GPS_speed
+sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
-sig3_default = choose_default(sig_candidates, ["GPS_speed"])          # was EEC1_Speed
+sig3_default = choose_default(sig_candidates, ["GPS_speed"])
 
 st.subheader("Signalen kiezen")
 
@@ -273,7 +340,7 @@ for i in range(n_signals):
                 default_i = c
                 break
 
-    key = f"sig{i+1}"  # sig1, sig2, sig3, ...
+    key = f"sig{i+1}"
     label = f"Signaal {i+1} (typ om te zoeken)"
     value_for_index = st.session_state.get(key, default_i)
     idx = safe_index(sig_candidates, value_for_index, default_i)
@@ -285,14 +352,8 @@ if len(set(selected_signals)) != len(selected_signals):
     st.warning("Kies elk signaal maar één keer (geen duplicaten).")
     st.stop()
 
-df = load_columns(["Timestamp", LON_COL, LAT_COL] + selected_signals)
-
-if len(df) < 2:
-    st.error("Te weinig rijen na laden/parsen van Timestamp.")
-    st.stop()
-
-tmin_ts = df["Timestamp"].iloc[0]
-tmax_ts = df["Timestamp"].iloc[-1]
+# Tijdvenster: snel via metadata
+tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = tmin_ts.to_pydatetime()
 tmax = tmax_ts.to_pydatetime()
 
@@ -312,17 +373,18 @@ start_dt, end_dt = st.slider(
 start = pd.Timestamp(start_dt)
 end = pd.Timestamp(end_dt)
 
-sub = df[(df["Timestamp"] >= start) & (df["Timestamp"] <= end)].copy()
-if len(sub) < 2:
+# Data laden PAS NU (filter + alleen nodige kolommen)
+cols_needed = ["Timestamp", LON_COL, LAT_COL] + selected_signals
+df = load_filtered(cols_needed, start, end)
+
+if len(df) < 2:
     st.warning("Te weinig data in dit tijdvenster.")
     st.stop()
 
 # =======================
 # Export geselecteerd tijdvenster (CSV)
 # =======================
-export_cols = ["Timestamp", LON_COL, LAT_COL] + selected_signals
-export_df = sub[export_cols].copy()
-
+export_df = df[cols_needed].copy()
 start_str = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
 end_str = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
 csv_name = f"selectie_{start_str}_tot_{end_str}.csv"
@@ -335,15 +397,16 @@ st.download_button(
     mime="text/csv",
 )
 
-subp = downsample_ordered(sub, MAX_POINTS)
+subp = downsample_ordered(df, MAX_POINTS).copy()
 
 # =======================
 # Kaart
 # =======================
 st.subheader("GPS track (geselecteerd tijdvenster)")
 
-subp[LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
-subp[LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
+# .loc om SettingWithCopyWarning te vermijden
+subp.loc[:, LON_COL] = pd.to_numeric(subp[LON_COL], errors="coerce")
+subp.loc[:, LAT_COL] = pd.to_numeric(subp[LAT_COL], errors="coerce")
 
 sub_ok = subp.dropna(subset=[LON_COL, LAT_COL])
 sub_ok = sub_ok[np.isfinite(sub_ok[LON_COL]) & np.isfinite(sub_ok[LAT_COL])]
@@ -369,7 +432,7 @@ for i, sig in enumerate(selected_signals, start=1):
     fig = make_line_figure(subp["Timestamp"], subp[sig], sig, selected_ts=selected_ts)
     clicked = plot_and_capture_click(fig, key=f"plot_sig{i}")
 
-    # FIX: geen `or` gebruiken met pandas Timestamps (kan crashen)
+    # geen `or` gebruiken met timestamps
     if clicked_any is None and clicked is not None:
         clicked_any = clicked
 
