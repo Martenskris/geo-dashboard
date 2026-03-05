@@ -167,8 +167,6 @@ def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) ->
     """
     Preview over VOLLEDIG tijdsbereik (downsampled) zonder alles in RAM te laden.
     Reservoir sampling op Timestamp + 1 signaal, daarna sorteren op tijd.
-
-    ✅ FIX voor jouw error: gebruik dataset.scanner(...) i.p.v. dataset.scan(...)
     """
     dataset = ds.dataset(FILE, format="parquet")
     cols = ["Timestamp", signal]
@@ -178,6 +176,7 @@ def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) ->
     reservoir_val = []
     seen = 0
 
+    # ✅ compatibel: scanner() i.p.v. scan()
     scanner = dataset.scanner(columns=cols, batch_size=250_000)
     for batch in scanner.to_batches():
         ts_arr = batch.column(0).to_pylist()
@@ -199,9 +198,7 @@ def load_preview_sample_full_range(signal: str, max_points: int = MAX_POINTS) ->
     if not reservoir_ts:
         return pd.DataFrame(columns=["Timestamp", signal])
 
-    df = pd.DataFrame(
-        {"Timestamp": pd.to_datetime(reservoir_ts, errors="coerce"), signal: reservoir_val}
-    )
+    df = pd.DataFrame({"Timestamp": pd.to_datetime(reservoir_ts, errors="coerce"), signal: reservoir_val})
     try:
         df["Timestamp"] = df["Timestamp"].dt.tz_localize(None)
     except Exception:
@@ -257,7 +254,7 @@ def make_line_figure(x, y, title, selected_ts=None):
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, t=40, b=0),
-        height=250,
+        height=300,
         hovermode="x",
         showlegend=False,
         clickmode="event+select",
@@ -273,6 +270,30 @@ def make_line_figure(x, y, title, selected_ts=None):
             line={"width": 3},
             layer="above",
         )
+    return fig
+
+
+def make_preview_figure_with_window(preview_df: pd.DataFrame, signal: str, start_dt: datetime, end_dt: datetime):
+    """
+    Previewfiguur over volledig bereik + visuele selectie van tijdslot (shaded region + 2 lijnen).
+    """
+    fig = make_line_figure(preview_df["Timestamp"], preview_df[signal], f"Preview: {signal}")
+
+    # Shaded selectie over volledige y-range
+    fig.add_vrect(
+        x0=pd.Timestamp(start_dt),
+        x1=pd.Timestamp(end_dt),
+        fillcolor="rgba(0,0,0,0.12)",  # neutraal, licht
+        line_width=0,
+        layer="below",
+    )
+    # Duidelijke randen
+    fig.add_vline(x=pd.Timestamp(start_dt), line_width=2)
+    fig.add_vline(x=pd.Timestamp(end_dt), line_width=2)
+
+    fig.update_layout(
+        title=f"Preview: {signal}  (selectie: {start_dt} → {end_dt})"
+    )
     return fig
 
 
@@ -354,32 +375,9 @@ sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["GPS_speed"])
 
 # =======================
-# 1) Preview: altijd volledig signaal (full range)
+# Tijdvenster kiezen (voor selectie in preview + export + laden)
 # =======================
-st.subheader("Preview (volledig signaal bij opstart)")
-
-preview_signal = st.selectbox(
-    "Preview signaal",
-    sig_candidates,
-    index=safe_index(sig_candidates, st.session_state.get("preview_signal", sig1_default), sig1_default),
-    key="preview_signal",
-)
-
-preview_df = load_preview_sample_full_range(preview_signal, max_points=MAX_POINTS)
-if len(preview_df) < 2:
-    st.warning("Te weinig data om preview te tonen.")
-else:
-    st.caption("Preview toont het volledige tijdsbereik (downsampled voor performance).")
-    st.plotly_chart(
-        make_line_figure(preview_df["Timestamp"], preview_df[preview_signal], f"Preview: {preview_signal}"),
-        width="stretch",
-    )
-
-# =======================
-# 2) Tijdvenster kiezen (1 minuut stappen)
-# =======================
-st.divider()
-st.subheader("Tijdvenster kiezen (voor laden & downloaden)")
+st.subheader("Tijdvenster kiezen")
 
 tmin_ts, tmax_ts = get_time_bounds_from_metadata()
 tmin = floor_to_minute(tmin_ts.to_pydatetime())
@@ -425,7 +423,7 @@ def update_from_inputs():
     st.session_state["time_slider"] = (s, e)
 
 
-# init state: start bij begin dataset, eind = begin + 1 uur
+# init state: start bij begin dataset, eind = begin + 1 uur (licht)
 if "start_dt" not in st.session_state or "end_dt" not in st.session_state:
     default_start = tmin
     default_end = min(tmax, default_start + BIG_WINDOW)
@@ -463,7 +461,30 @@ end = pd.Timestamp(end_dt)
 duration = end - start
 
 # =======================
-# 3) Kies signalen voor grafieken & download
+# Preview: volledig signaal + toon selectie (slider-range) in de grafiek
+# =======================
+st.divider()
+st.subheader("Preview (volledig signaal + selectie zichtbaar)")
+
+preview_signal = st.selectbox(
+    "Preview signaal",
+    sig_candidates,
+    index=safe_index(sig_candidates, st.session_state.get("preview_signal", sig1_default), sig1_default),
+    key="preview_signal",
+)
+
+preview_df = load_preview_sample_full_range(preview_signal, max_points=MAX_POINTS)
+if len(preview_df) < 2:
+    st.warning("Te weinig data om preview te tonen.")
+else:
+    st.caption("De grijze zone in de preview toont het gekozen tijdslot (via sliders/tijdvakken).")
+    st.plotly_chart(
+        make_preview_figure_with_window(preview_df, preview_signal, start_dt, end_dt),
+        width="stretch",
+    )
+
+# =======================
+# Signalen kiezen voor grafieken & download
 # =======================
 st.divider()
 st.subheader("Signalen kiezen voor grafieken & download")
