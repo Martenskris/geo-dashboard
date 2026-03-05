@@ -160,7 +160,7 @@ def make_line_figure(x, y, title, selected_ts=None):
             type="line",
             x0=ts, x1=ts,
             y0=0, y1=1,
-            xref="x", yref="paper",     # yref="paper" -> 0..1 over volledige hoogte
+            xref="x", yref="paper",
             line={"width": 3},
             layer="above",
         )
@@ -176,14 +176,15 @@ def safe_index(options, value, fallback):
     return 0
 
 
-def nearest_values_at(df_full, ts, sig1, sig2, sig3):
+def nearest_values_at_multi(df_full, ts, signals):
     """
-    Dichtstbijzijnde timestamp (geen interpolatie).
+    Dichtstbijzijnde timestamp (geen interpolatie) + waarden voor alle gekozen signalen.
     """
     if ts is None or df_full.empty:
         return None
 
-    d = df_full[["Timestamp", sig1, sig2, sig3]].dropna(subset=["Timestamp"]).sort_values("Timestamp")
+    cols = ["Timestamp"] + list(signals)
+    d = df_full[cols].dropna(subset=["Timestamp"]).sort_values("Timestamp")
     t = pd.Timestamp(ts)
 
     idx = d["Timestamp"].searchsorted(t)
@@ -197,12 +198,10 @@ def nearest_values_at(df_full, ts, sig1, sig2, sig3):
         after = d.iloc[idx]
         row = before if (t - before["Timestamp"]) <= (after["Timestamp"] - t) else after
 
-    return {
-        "Timestamp": row["Timestamp"].to_pydatetime(),
-        sig1: float(row[sig1]) if pd.notna(row[sig1]) else np.nan,
-        sig2: float(row[sig2]) if pd.notna(row[sig2]) else np.nan,
-        sig3: float(row[sig3]) if pd.notna(row[sig3]) else np.nan,
-    }
+    out = {"Timestamp": row["Timestamp"].to_pydatetime()}
+    for s in signals:
+        out[s] = float(row[s]) if pd.notna(row[s]) else np.nan
+    return out
 
 
 def plot_and_capture_click(fig, key):
@@ -240,7 +239,7 @@ def plot_and_capture_click(fig, key):
 # UI
 # =======================
 st.set_page_config(layout="wide")
-st.title("Geo + 3 signalen (TotaleTimetable_date)")
+st.title("Geo + signalen (TotaleTimetable_date)")
 
 ensure_dataset()
 
@@ -264,38 +263,45 @@ if not sig_candidates:
     st.error("Geen numerieke/logische signalen gevonden in de Parquet.")
     st.stop()
 
-# Defaults (SIG1 en SIG3 omgewisseld)
+# Defaults (SIG1 en SIG3 omgewisseld t.o.v. vroeger)
 sig1_default = choose_default(sig_candidates, ["EEC1_Speed"])          # was GPS_speed
 sig2_default = choose_default(sig_candidates, ["Verbruik_g_per_km"])
 sig3_default = choose_default(sig_candidates, ["GPS_speed"])          # was EEC1_Speed
 
-# Belangrijk: géén st.session_state["sig1"]=... vóór de widget,
-# anders krijg je de warning "default value + Session State API".
-c1, c2, c3 = st.columns(3)
-with c1:
-    sig1 = st.selectbox(
-        "Signaal 1 (typ om te zoeken)",
-        sig_candidates,
-        index=safe_index(sig_candidates, st.session_state.get("sig1", sig1_default), sig1_default),
-        key="sig1",
-    )
-with c2:
-    sig2 = st.selectbox(
-        "Signaal 2 (typ om te zoeken)",
-        sig_candidates,
-        index=safe_index(sig_candidates, st.session_state.get("sig2", sig2_default), sig2_default),
-        key="sig2",
-    )
-with c3:
-    sig3 = st.selectbox(
-        "Signaal 3 (typ om te zoeken)",
-        sig_candidates,
-        index=safe_index(sig_candidates, st.session_state.get("sig3", sig3_default), sig3_default),
-        key="sig3",
-    )
+st.subheader("Signalen kiezen")
 
-# Data laden
-df = load_columns(["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3])
+max_n = max(1, min(len(sig_candidates), 12))  # cap op 12 om UI netjes te houden
+n_signals = st.slider("Aantal signalen in grafieken", 1, max_n, value=min(3, max_n), step=1)
+
+# Dynamische selectboxes (zelfde gedrag als de vaste 3: typ-zoek, met session_state via key)
+selected_signals = []
+defaults = [sig1_default, sig2_default, sig3_default]
+
+for i in range(n_signals):
+    default_i = defaults[i] if i < len(defaults) else None
+
+    # fallback: neem eerste niet-gebruikte kandidaat als default als default_i None of al gebruikt
+    if default_i is None or default_i in selected_signals:
+        for c in sig_candidates:
+            if c not in selected_signals:
+                default_i = c
+                break
+
+    key = f"sig{i+1}"  # sig1, sig2, sig3, ...
+    label = f"Signaal {i+1} (typ om te zoeken)"
+    value_for_index = st.session_state.get(key, default_i)
+    idx = safe_index(sig_candidates, value_for_index, default_i)
+
+    chosen = st.selectbox(label, sig_candidates, index=idx, key=key)
+    selected_signals.append(chosen)
+
+# Uniekheidscheck (zoals bij de vaste 3)
+if len(set(selected_signals)) != len(selected_signals):
+    st.warning("Kies elk signaal maar één keer (geen duplicaten).")
+    st.stop()
+
+# Data laden (GPS + alle gekozen signalen)
+df = load_columns(["Timestamp", LON_COL, LAT_COL] + selected_signals)
 
 if len(df) < 2:
     st.error("Te weinig rijen na laden/parsen van Timestamp.")
@@ -329,15 +335,14 @@ if len(sub) < 2:
     st.stop()
 
 # =======================
-# Export geselecteerd tijdvenster (CSV)
+# Export geselecteerd tijdvenster (CSV) - neemt alle gekozen signalen mee
 # =======================
-export_cols = ["Timestamp", LON_COL, LAT_COL, sig1, sig2, sig3]
+export_cols = ["Timestamp", LON_COL, LAT_COL] + selected_signals
 export_df = sub[export_cols].copy()
 
 start_str = pd.Timestamp(start_dt).strftime("%Y%m%d_%H%M%S")
 end_str = pd.Timestamp(end_dt).strftime("%Y%m%d_%H%M%S")
 csv_name = f"selectie_{start_str}_tot_{end_str}.csv"
-
 csv_bytes = export_df.to_csv(index=False).encode("utf-8")
 
 st.download_button(
@@ -367,7 +372,7 @@ else:
     st.plotly_chart(fig_map, use_container_width=True)
 
 # =======================
-# 3 grafieken + selectielijn + waarden
+# Grafieken + selectielijn + waarden
 # =======================
 st.subheader("Signalen (geselecteerd tijdvenster)")
 
@@ -376,32 +381,33 @@ if "clicked_ts" not in st.session_state:
 
 selected_ts = st.session_state["clicked_ts"]
 
-fig1 = make_line_figure(subp["Timestamp"], subp[sig1], sig1, selected_ts=selected_ts)
-fig2 = make_line_figure(subp["Timestamp"], subp[sig2], sig2, selected_ts=selected_ts)
-fig3 = make_line_figure(subp["Timestamp"], subp[sig3], sig3, selected_ts=selected_ts)
+# Maak & toon grafieken (verticaal onder elkaar)
+clicked_any = None
+for i, sig in enumerate(selected_signals, start=1):
+    fig = make_line_figure(subp["Timestamp"], subp[sig], sig, selected_ts=selected_ts)
+    clicked = plot_and_capture_click(fig, key=f"plot_sig{i}")
+    clicked_any = clicked_any or clicked
 
-clicked1 = plot_and_capture_click(fig1, key="plot_sig1")
-clicked2 = plot_and_capture_click(fig2, key="plot_sig2")
-clicked3 = plot_and_capture_click(fig3, key="plot_sig3")
+if clicked_any is not None:
+    st.session_state["clicked_ts"] = clicked_any
+    selected_ts = clicked_any
 
-new_click = clicked1 or clicked2 or clicked3
-if new_click is not None:
-    st.session_state["clicked_ts"] = new_click
-    selected_ts = new_click
-
-vals = nearest_values_at(df, selected_ts, sig1, sig2, sig3)
+# Waarden tonen voor geselecteerde timestamp
+vals = nearest_values_at_multi(df, selected_ts, selected_signals)
 
 with st.container(border=True):
     st.markdown("### Meetpunt (klik in een grafiek)")
     if vals is None:
         st.write("Klik ergens op de lijn in een grafiek om het tijdstip te selecteren.")
-        st.caption("De verticale selectielijn verschijnt op alle drie grafieken.")
+        st.caption("De verticale selectielijn verschijnt op alle grafieken.")
     else:
         st.write(f"**Timestamp:** {vals['Timestamp']}")
-        cc1, cc2, cc3 = st.columns(3)
-        with cc1:
-            st.metric(sig1, f"{vals[sig1]:.6f}")
-        with cc2:
-            st.metric(sig2, f"{vals[sig2]:.6f}")
-        with cc3:
-            st.metric(sig3, f"{vals[sig3]:.6f}")
+
+        # metrics in rijen van 3
+        per_row = 3
+        for r in range(0, len(selected_signals), per_row):
+            row_sigs = selected_signals[r:r + per_row]
+            cols = st.columns(len(row_sigs))
+            for c, s in zip(cols, row_sigs):
+                with c:
+                    st.metric(s, f"{vals[s]:.6f}")
