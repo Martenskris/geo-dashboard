@@ -4,3 +4,5 @@ pyarrow
 plotly
 numpy
 gdown
+azure-storage-blob
+azure-identity
